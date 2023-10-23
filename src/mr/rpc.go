@@ -33,6 +33,12 @@ type FetchTaskReply struct {
 	ReduceTask *ReduceTask
 }
 
+type TaskFinishedArgs struct {
+	TaskId int
+}
+type TaskFinishedReply struct {
+}
+
 // Add your RPC definitions here.
 
 // Cook up a unique-ish UNIX-domain socket name

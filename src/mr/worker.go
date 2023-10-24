@@ -73,7 +73,7 @@ func doMapTask(task *MapTask, mapf func(string, string) []KeyValue) {
 
 	for i, ikva := range omap {
 		intermediateFileName := fmt.Sprintf("mr-%d-%d.m", task.Id, i)
-		tmpfile, err := ioutil.TempFile("./", "*.tmp")
+		tmpfile, err := ioutil.TempFile("./", "mr-*.tmp")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -113,7 +113,7 @@ func doReduceTask(task *ReduceTask, reducef func(string, []string) string) {
 
 	sort.Sort(ByKey(intermediate))
 
-	tmpfile, err := ioutil.TempFile("./", "*.tmp")
+	tmpfile, err := ioutil.TempFile("./", "mr-*.tmp")
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -20,8 +20,8 @@ const (
 
 type Coordinator struct {
 	// Your definitions here.
-	mutex        sync.Mutex
-	cond         *sync.Cond
+	Mutex        sync.Mutex
+	Cond         *sync.Cond
 	mapTasksDone bool
 	done         bool
 	MapTasks     []*MapTask
@@ -43,8 +43,8 @@ type ReduceTask struct {
 
 // Your code here -- RPC handlers for the worker to call.
 func (c *Coordinator) FetchTask(args *FetchTaskArgs, reply *FetchTaskReply) error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
 
 	for {
 		if c.MapTasksDone() {
@@ -54,7 +54,7 @@ func (c *Coordinator) FetchTask(args *FetchTaskArgs, reply *FetchTaskReply) erro
 			c.mapTaskStarted(task)
 			return nil
 		} else {
-			c.cond.Wait()
+			c.Cond.Wait()
 		}
 	}
 
@@ -67,7 +67,7 @@ func (c *Coordinator) FetchTask(args *FetchTaskArgs, reply *FetchTaskReply) erro
 			c.reduceTaskStarted(task)
 			return nil
 		} else {
-			c.cond.Wait()
+			c.Cond.Wait()
 		}
 	}
 
@@ -98,12 +98,12 @@ func (c *Coordinator) mapTaskStarted(task *MapTask) {
 	go func(task *MapTask) {
 		timedue := time.After(10 * time.Second)
 		<-timedue
-		c.mutex.Lock()
-		defer c.mutex.Unlock()
+		c.Mutex.Lock()
+		defer c.Mutex.Unlock()
 		if task.State != FINISHED {
 			log.Printf("recover map task %d \n", task.Id)
 			task.State = WAITTING
-			c.cond.Broadcast()
+			c.Cond.Broadcast()
 		}
 	}(task)
 }
@@ -114,33 +114,33 @@ func (c *Coordinator) reduceTaskStarted(task *ReduceTask) {
 	go func(task *ReduceTask) {
 		timedue := time.After(10 * time.Second)
 		<-timedue
-		c.mutex.Lock()
-		defer c.mutex.Unlock()
+		c.Mutex.Lock()
+		defer c.Mutex.Unlock()
 		if task.State != FINISHED {
 			log.Printf("recover reduce task %d \n", task.Id)
 			task.State = WAITTING
-			c.cond.Broadcast()
+			c.Cond.Broadcast()
 		}
 	}(task)
 
 }
 
 func (c *Coordinator) MapTaskFinished(args *TaskFinishedArgs, reply *TaskFinishedReply) error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
 	c.MapTasks[args.TaskId].State = FINISHED
 	if c.MapTasksDone() {
-		c.cond.Broadcast()
+		c.Cond.Broadcast()
 	}
 	return nil
 }
 
 func (c *Coordinator) ReduceTaskFinished(args *TaskFinishedArgs, reply *TaskFinishedReply) error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
 	c.ReduceTasks[args.TaskId].State = FINISHED
 	if c.Done() {
-		c.cond.Broadcast()
+		c.Cond.Broadcast()
 	}
 	return nil
 }
@@ -193,7 +193,7 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
-	c.cond = sync.NewCond(&c.mutex)
+	c.Cond = sync.NewCond(&c.Mutex)
 	// c.reduceTasksCond = sync.NewCond(&c.reduceTasksMutex)
 	// Your code here.
 	c.MapTasks = make([]*MapTask, 0)

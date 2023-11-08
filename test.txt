@@ -1,0 +1,1 @@
+VERBOSE=1 go test -run TestReElection2A | tee output.log | dslogs -c 3

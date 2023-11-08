@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/rpc"
 	"os"
@@ -59,7 +59,7 @@ func doMapTask(task *MapTask, mapf func(string, string) []KeyValue) {
 	if err != nil {
 		log.Fatalf("cannot open %v", task.FileName)
 	}
-	content, err := ioutil.ReadAll(file)
+	content, err := io.ReadAll(file)
 	if err != nil {
 		log.Fatalf("cannot read %v", task.FileName)
 	}
@@ -73,7 +73,7 @@ func doMapTask(task *MapTask, mapf func(string, string) []KeyValue) {
 
 	for i, ikva := range omap {
 		intermediateFileName := fmt.Sprintf("mr-%d-%d.m", task.Id, i)
-		tmpfile, err := ioutil.TempFile("./", "mr-*.tmp")
+		tmpfile, err := os.CreateTemp("./", "mr-*.tmp")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -113,7 +113,7 @@ func doReduceTask(task *ReduceTask, reducef func(string, []string) string) {
 
 	sort.Sort(ByKey(intermediate))
 
-	tmpfile, err := ioutil.TempFile("./", "mr-*.tmp")
+	tmpfile, err := os.CreateTemp("./", "mr-*.tmp")
 	if err != nil {
 		log.Fatal(err)
 	}

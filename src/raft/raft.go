@@ -181,10 +181,9 @@ func (args *RequestVoteArgs) String() string {
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
-	Term          int  // currentTerm, for candidate to update itself
-	VoteGranted   bool // true means candidate received vote
-	ConflictTerm  int  // term of the conflicting entry
-	ConflictIndex int
+	Term        int  // currentTerm, for candidate to update itself
+	VoteGranted bool // true means candidate received vote
+
 }
 
 type AppendEntriesArgs struct {
@@ -202,8 +201,10 @@ func (args *AppendEntriesArgs) String() string {
 }
 
 type AppendEntriesReply struct {
-	Term    int  // currentTerm, for leader to update itself
-	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	Term          int // currentTerm, for leader to update itself
+	ConflictTerm  int // term of the conflicting entry
+	ConflictIndex int
+	Success       bool // true if follower contained entry matching prevLogIndex and prevLogTerm
 }
 
 func (rf *Raft) lastLogIndex() int {
@@ -212,6 +213,25 @@ func (rf *Raft) lastLogIndex() int {
 
 func (rf *Raft) lastLogTerm() int {
 	return rf.log[len(rf.log)-1].Term
+}
+
+/**
+ * you should only restart your election timer if
+ * a) you get an AppendEntries RPC from the current leader (i.e., if the term in the AppendEntries arguments is outdated, you should not reset your timer);
+ * b) you are starting an election; or
+ * c) you grant a vote to another peer.
+ */
+func (rf *Raft) resetElectionTimer() {
+	rf.lastHeartbeat = time.Now()
+}
+
+/**
+ * If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower (§5.1)
+ */
+func (rf *Raft) stepDown(term int) {
+	rf.currentTerm = term
+	rf.role = FOLLOWER
+	rf.votedFor = -1
 }
 
 // example RequestVote RPC handler.
@@ -227,17 +247,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.role = FOLLOWER
-		rf.votedFor = -1
+		rf.stepDown(args.Term)
 	}
 
+	// “up-to-date log” check
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		if args.LastLogTerm > rf.lastLogTerm() ||
 			(args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= rf.lastLogIndex()) {
 			Debug(VoteEvent, rf.me, "Grant vote to %d.\n", args.CandidateId)
 			rf.votedFor = args.CandidateId
-			rf.lastHeartbeat = time.Now()
+			rf.resetElectionTimer()
 			reply.VoteGranted = true
 		} else {
 			Debug(VoteEvent, rf.me, "Reject vote to %d for candidate’s log is not at least as up-to-date as voter’s log.\n",
@@ -265,19 +284,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	rf.lastHeartbeat = time.Now()
+	rf.resetElectionTimer()
 
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.role = FOLLOWER
-		rf.votedFor = -1
-	} else if rf.role == CANDIDATE {
-		rf.role = FOLLOWER
-		rf.votedFor = -1
+	if args.Term > rf.currentTerm || rf.role == CANDIDATE {
+		rf.stepDown(args.Term)
 	}
+
 	Debug(HeartbeatEvent, rf.me, "recieved heartbeats from %d, args=%v\n",
 		args.LeaderId, args)
 
+	// // “PrevLogIndex log matched” check
 	if args.PrevLogIndex == 0 {
 		rf.log = rf.log[:1]
 		rf.log = append(rf.log, args.Entries...)
@@ -288,19 +304,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else {
 		if len(rf.log) <= args.PrevLogIndex {
 			Debug(HeartbeatEvent, rf.me, "could not append entries for len(rf.log) <= args.PrevLogIndex\n")
+			reply.ConflictTerm = rf.lastLogTerm()
+			reply.ConflictIndex = rf.lastLogIndex()
 			reply.Success = false
 		} else if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 			Debug(HeartbeatEvent, rf.me, "could not append entries for rf.log[args.PrevLogIndex].Term != args.PrevLogTerm\n")
+
+			// conflictTerm := rf.log[args.PrevLogIndex].Term
+			// reply.ConflictTerm = conflictTerm
+			// i := args.PrevLogIndex
+			// for ; rf.log[i].Term == conflictTerm; i-- {
+			// }
+			// reply.ConflictIndex = i + 1
+
+			reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+			reply.ConflictIndex = args.PrevLogIndex
+
 			rf.log = rf.log[:args.PrevLogIndex]
 			reply.Success = false
 		} else {
-			// args.PrevLogIndex matched
+			// follower's log matches the leader’s log up to and including the args.prevLogIndex
 			if len(args.Entries) > 0 {
 				j := 0
 				// overlap part
-				for i := args.PrevLogIndex + 1; i < len(rf.log); i++ {
+				for i := args.PrevLogIndex + 1; i < len(rf.log) && j < len(args.Entries); i, j = i+1, j+1 {
 					rf.log[i] = args.Entries[j]
-					j++
 				}
 				rf.log = append(rf.log, args.Entries[j:]...)
 				Debug(HeartbeatEvent, rf.me, "append entries j=%d, append=%v\n", j, len(args.Entries[j:]))
@@ -314,11 +342,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) followerCommit(leaderCommitIndex int) {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
-
 	if leaderCommitIndex > rf.commitIndex {
-		// Debug(CommitEvent, rf.me, "follower commit\n")
 		if leaderCommitIndex < rf.lastLogIndex() {
 			rf.commitIndex = leaderCommitIndex
 		} else {
@@ -368,38 +392,45 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	// return ok
 	if ok := rf.peers[server].Call("Raft.AppendEntries", args, reply); ok {
 		rf.mu.Lock()
+		Debug(HeartbeatEvent, rf.me, "hearbeat, reply success  from %d : reply=%+v.\n",
+			server, reply)
 		if reply.Success {
-			if args.PrevLogIndex == rf.nextIndex[server]-1 {
-				Debug(HeartbeatEvent, rf.me, "hearbeat, reply success  from %d : rf.matchIndex[%d]=%d\n",
-					server, server, rf.matchIndex[server])
+			if args.PrevLogIndex == rf.nextIndex[server]-1 { // check rf.nextIndex[server] has not been modify by other replys
 				rf.nextIndex[server] += len(args.Entries)
 				rf.matchIndex[server] = rf.nextIndex[server] - 1
-			} else {
-				Debug(HeartbeatEvent, rf.me, "hearbeat, reply success  from %d , but args.PrevLogIndex != rf.nextIndex[%d]-1, others had appended the same entries \n",
-					server, server)
 			}
 		} else {
 			if reply.Term > rf.currentTerm {
-				Debug(HeartbeatEvent, rf.me, "hearbeat, reply failed reply from %d : AppendEntries failed for reply.Term %d > rf.currentTerm %d\n",
-					server, reply.Term, rf.currentTerm)
-				rf.currentTerm = reply.Term
-				rf.role = FOLLOWER
+				rf.stepDown(reply.Term)
 			} else {
-				Debug(HeartbeatEvent, rf.me, "hearbeat, reply failed  from %d : AppendEntries failed, rf.nextIndex[%d]=%d\n",
-					server, server, rf.nextIndex[server])
+				// if args.PrevLogIndex == rf.nextIndex[server]-1 {
+				// 	rf.nextIndex[server]--
+				// }
+				//refine
+
 				if args.PrevLogIndex == rf.nextIndex[server]-1 {
-					rf.nextIndex[server]--
+					if rf.log[reply.ConflictIndex].Term == reply.ConflictTerm {
+						// this condition could occur when "length of follower's log" <= args.prevLogIndex
+						rf.nextIndex[server] = reply.ConflictIndex + 1
+					} else {
+						// step over all the log with the same term as the log at reply.ConflictIndex
+						i := reply.ConflictIndex
+						term := rf.log[reply.ConflictIndex].Term
+						for ; rf.log[i].Term == term; i-- {
+						}
+						rf.nextIndex[server] = i + 1
+					}
 				}
+				Debug(HeartbeatEvent, rf.me, "hearbeat, reset rf.nextIndex[%d]=%d.\n",
+					server, rf.nextIndex[server])
 
 			}
 		}
 		rf.mu.Unlock()
 	} else {
-		Debug(HeartbeatEvent, rf.me, "hearbeat, no reply from %d \n", server)
+		Debug(HeartbeatEvent, rf.me, "hearbeat, no reply from %d. \n", server)
 	}
 }
 
@@ -466,14 +497,16 @@ func (rf *Raft) ticker() {
 func (rf *Raft) leaderElection() {
 	rf.mu.Lock()
 
-	if rf.role == FOLLOWER && time.Now().Sub(rf.lastHeartbeat) >= ELECTION_TIMEOUT {
+	if rf.role == FOLLOWER && time.Since(rf.lastHeartbeat) >= ELECTION_TIMEOUT {
 		rf.role = CANDIDATE
 	}
 
-	if rf.role == CANDIDATE && time.Now().Sub(rf.lastHeartbeat) >= ELECTION_TIMEOUT {
+	if rf.role == CANDIDATE && time.Since(rf.lastHeartbeat) >= ELECTION_TIMEOUT {
 		Debug(VoteEvent, rf.me, "Leader election start\n")
 		rf.currentTerm++
 		rf.votedFor = rf.me
+		rf.resetElectionTimer()
+
 		ch := make(chan *RequestVoteReply)
 
 		for peerId := 0; peerId < len(rf.peers); peerId++ {
@@ -504,9 +537,7 @@ func (rf *Raft) leaderElection() {
 
 				} else if reply.Term > rf.currentTerm {
 					rf.mu.Lock()
-					rf.currentTerm = reply.Term
-					rf.role = FOLLOWER
-					rf.votedFor = -1
+					rf.stepDown(reply.Term)
 					rf.mu.Unlock()
 					Debug(VoteEvent, rf.me, "vote reiceved rejected reply\n")
 					break
@@ -571,7 +602,6 @@ func (rf *Raft) leaderLogReplication() {
 			LeaderCommitIndex: rf.commitIndex,
 		}
 		Debug(HeartbeatEvent, rf.me, "Leader send heart beats to S%d with args=%v\n", peerId, &args)
-		// args.Entries = append(args.Entries, rf.log[rf.nextIndex[peerId]:]...)
 		reply := AppendEntriesReply{}
 		go rf.sendAppendEntries(peerId, &args, &reply)
 
@@ -639,14 +669,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = FOLLOWER
 	// rf.leaderId = -1
 	rf.votedFor = -1
-	rf.lastHeartbeat = time.Now()
+	rf.resetElectionTimer()
 	rf.applyCh = applyCh
 	rf.commitCond = sync.NewCond(&rf.mu)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	rf.lastHeartbeat = time.Now()
 	// start ticker goroutine to start elections
 	go rf.ticker()
 	go rf.applyCommitToStateMachine()

@@ -23,8 +23,8 @@ const (
 
 	VoteEvent      LogEventT = "VOTE"
 	HeartbeatEvent LogEventT = "HEARTBEAT"
+	CommitEvent    LogEventT = "CMIT"
 
-	CommitEvent  LogEventT = "CMIT"
 	DropEvent    LogEventT = "DROP"
 	PersistEvent LogEventT = "PERS"
 	SnapEvent    LogEventT = "SNAP"
@@ -51,8 +51,8 @@ var debugStart time.Time
 var debugVerbosity int
 
 func DebugInit() {
-	// debugVerbosity = getVerbosity()
 	// debugVerbosity = 1
+	debugVerbosity = getVerbosity()
 	debugStart = time.Now()
 
 	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
@@ -61,7 +61,7 @@ func DebugInit() {
 func Debug(what LogEventT, who int, format string, a ...interface{}) {
 	if debugVerbosity >= 1 {
 		time := time.Since(debugStart).Microseconds()
-		time /= 100
+		// time /= 100
 		prefix := fmt.Sprintf("%06d %v S%d ", time, string(what), who)
 		format = prefix + format
 		log.Printf(format, a...)

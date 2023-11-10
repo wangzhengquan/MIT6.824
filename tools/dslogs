@@ -13,21 +13,23 @@ from rich.traceback import install
 # fmt: off
 # Mapping from topics to colors
 TOPICS = {
-    "VOTE": "#67a0b2",
-    "HEARTBEAT": "#d0b343",
-    "TIMR": "#9a9a99",
-    "TERM": "#70c43f",
-    "LOG1": "#4878bc",
-    "LOG2": "#398280",
-    "CMIT": "#98719f",
-    "PERS": "#d08341",
-    "SNAP": "#FD971F",
-    "DROP": "#ff615c",
-    "CLNT": "#00813c",
     "TEST": "#fe2c79",
     "INFO": "#ffffff",
     "WARN": "#d08341",
     "ERRO": "#fe2626",
+
+    "VOTE": "#67a0b2",
+    "HEARTBEAT": "#d0b343",
+    "CMIT": "#98719f",
+
+    "TIMR": "#9a9a99",
+    "TERM": "#70c43f",
+    "LOG1": "#4878bc",
+    "LOG2": "#398280",
+    "PERS": "#d08341",
+    "SNAP": "#FD971F",
+    "DROP": "#ff615c",
+    "CLNT": "#00813c",
     "TRCE": "#fe2626",
 }
 # fmt: on

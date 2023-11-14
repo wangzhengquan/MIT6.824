@@ -126,8 +126,6 @@ func (rf *Raft) GetState() (int, bool) {
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
@@ -144,8 +142,6 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (2C).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var currentTerm int
@@ -250,7 +246,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 	if args.Term < rf.currentTerm {
-		Debug(VoteEvent, rf.me, "Reject vote to %d for candidate term %d < current term %d.\n",
+		Debug(VoteEvent, rf.me, "Voter denies vote to %d for candidate term %d < current term %d.\n",
 			args.CandidateId, args.Term, rf.currentTerm)
 		return
 	}
@@ -260,6 +256,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// “up-to-date log” check
+	// Raft determines which of two logs is more up-to-date by comparing the index and term of the last entries in the logs.
+	// If the logs have last entries with different terms, then the log with the later term is more up-to-date.
+	// If the logs end with the same term, then whichever log is longer is more up-to-date.
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		if args.LastLogTerm > rf.lastLogTerm() ||
 			(args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= rf.lastLogIndex()) {
@@ -268,17 +267,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.resetElectionTimer()
 			reply.VoteGranted = true
 		} else {
-			Debug(VoteEvent, rf.me, "Reject vote to %d for candidate’s log is not at least as up-to-date as voter’s log.\n",
+			Debug(VoteEvent, rf.me, "Voter denies its vote for its own log is more up-to-date than that of the candidate S%d.\n",
 				args.CandidateId)
 		}
-
+		rf.persist()
 	} else {
 		Debug(VoteEvent, rf.me, "Reject vote to %d for voter had voted for %d\n",
 			args.CandidateId, rf.votedFor)
 	}
-
-	// rf.persist()
-
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -302,7 +298,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	Debug(HeartbeatEvent, rf.me, "recieved heartbeats from %d, args=%v\n",
 		args.LeaderId, args)
 
-	// // “PrevLogIndex log matched” check
+	// “PrevLogIndex log matched” check
 	if args.PrevLogIndex == 0 {
 		rf.log = rf.log[:1]
 		rf.log = append(rf.log, args.Entries...)
@@ -349,6 +345,7 @@ func (rf *Raft) followerCommit(leaderCommitIndex int) {
 		} else {
 			rf.commitIndex = rf.lastLogIndex()
 		}
+		rf.persist()
 		rf.commitCond.Broadcast()
 	}
 	Debug(CommitEvent, rf.me, "follower commit args.LeaderCommitIndex=%d rf.commitIndex=%d\n",
@@ -406,13 +403,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			if reply.Term > rf.currentTerm {
 				rf.stepDown(reply.Term)
 			} else {
-				// tune rf.nextIndex
-
-				// if args.PrevLogIndex == rf.nextIndex[server]-1 {
-				// 	rf.nextIndex[server]--
-				// }
-
-				// refine
 				if args.PrevLogIndex == rf.nextIndex[server]-1 {
 					if rf.log[reply.ConflictIndex].Term == reply.ConflictTerm {
 						// this situation could occur when "length of follower's log" <= args.prevLogIndex
@@ -428,7 +418,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 				}
 				Debug(HeartbeatEvent, rf.me, "hearbeat, reset rf.nextIndex[%d]=%d.\n",
 					server, rf.nextIndex[server])
-
 			}
 		}
 		rf.mu.Unlock()
@@ -465,7 +454,6 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 		Term:    rf.currentTerm,
 	}
 	rf.log = append(rf.log, logEntry)
-	// rf.persist()
 	return
 }
 
@@ -492,7 +480,7 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// pause for a random amount of time between 50 and 350 milliseconds.
 		time.Sleep(time.Duration(50+rand.Int63n(300)) * time.Millisecond)
-		// Your code here (2A)
+		// leaderElection run in a seperate goroutine so that another election preocess can start when this election process timeout with out a result
 		go rf.leaderElection()
 	}
 }
@@ -508,6 +496,7 @@ func (rf *Raft) leaderElection() {
 		Debug(VoteEvent, rf.me, "Leader election start\n")
 		rf.currentTerm++
 		rf.votedFor = rf.me
+		rf.persist()
 		rf.resetElectionTimer()
 
 		ch := make(chan *RequestVoteReply, len(rf.peers)/2)
@@ -596,11 +585,11 @@ func (rf *Raft) leaderLogReplication() {
 	defer rf.mu.Unlock()
 	Debug(HeartbeatEvent, rf.me, "Leader send heart beats")
 	idle := (rf.commitIndex == rf.lastLogIndex())
+
 	for peerId := 0; peerId < len(rf.peers); peerId++ {
 		if peerId == rf.me {
 			continue
 		}
-
 		args := AppendEntriesArgs{
 			Term:              rf.currentTerm,
 			LeaderId:          rf.me,
@@ -614,7 +603,6 @@ func (rf *Raft) leaderLogReplication() {
 		go rf.sendAppendEntries(peerId, &args, &reply)
 
 		idle = idle && args.PrevLogIndex == rf.lastLogIndex()
-
 	}
 
 	// tune heartbeat interval base on if having more logs to send
@@ -641,6 +629,7 @@ func (rf *Raft) leaderCommit() {
 	Debug(CommitEvent, rf.me, "leader commit check commitIndex = %d\n", commitIndex)
 	if rf.log[commitIndex].Term == rf.currentTerm && commitIndex > rf.commitIndex {
 		rf.commitIndex = commitIndex
+		rf.persist()
 		rf.commitCond.Broadcast()
 	}
 }
@@ -715,6 +704,5 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 	go rf.applyCommitToStateMachine()
-
 	return rf
 }

@@ -1,4 +1,4 @@
-VERBOSE=1 go test -run  2A | tee output.log | dslogs -c3
-VERBOSE=1 dstest -p8 -n20 2A
+VERBOSE=1 go test -run  TestSnapshotInstall2D | tee output.log | dslogs -c3
+VERBOSE=1 dstest -p8 -n20 TestSnapshotInstallCrash2D
 
 VERBOSE=1 go test -run  2A  | dslogs -c3

@@ -7,13 +7,15 @@ package labgob
 // about non-capitalized field names.
 //
 
-import "encoding/gob"
-import "io"
-import "reflect"
-import "fmt"
-import "sync"
-import "unicode"
-import "unicode/utf8"
+import (
+	"encoding/gob"
+	"fmt"
+	"io"
+	"reflect"
+	"sync"
+	"unicode"
+	"unicode/utf8"
+)
 
 var mu sync.Mutex
 var errorCount int // for TestCapital
@@ -112,13 +114,11 @@ func checkType(t reflect.Type) {
 	}
 }
 
-//
 // warn if the value contains non-default values,
 // as it would if one sent an RPC but the reply
 // struct was already modified. if the RPC reply
 // contains default values, GOB won't overwrite
 // the non-default value.
-//
 func checkDefault(value interface{}) {
 	if value == nil {
 		return
@@ -168,6 +168,7 @@ func checkDefault1(value reflect.Value, depth int, name string) {
 				// state into variable that already have non-default values.
 				fmt.Printf("labgob warning: Decoding into a non-default variable/field %v may not work\n",
 					what)
+				// panic("Decoding into a non-default")
 			}
 			errorCount += 1
 			mu.Unlock()

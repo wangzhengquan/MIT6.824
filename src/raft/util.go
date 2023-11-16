@@ -24,10 +24,10 @@ const (
 	VoteEvent      LogEventT = "VOTE"
 	HeartbeatEvent LogEventT = "HEARTBEAT"
 	CommitEvent    LogEventT = "CMIT"
+	SnapEvent      LogEventT = "SNAP"
 
 	DropEvent    LogEventT = "DROP"
 	PersistEvent LogEventT = "PERS"
-	SnapEvent    LogEventT = "SNAP"
 	TermEvent    LogEventT = "TERM"
 	TimerEvent   LogEventT = "TIMR"
 	TraceEvent   LogEventT = "TRCE"
@@ -48,22 +48,28 @@ func getVerbosity() int {
 }
 
 var debugStart time.Time
-var debugVerbosity int
+var verbosity int
 
 func DebugInit() {
 	// debugVerbosity = 1
-	debugVerbosity = getVerbosity()
+	verbosity = getVerbosity()
 	debugStart = time.Now()
 
 	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 }
 
 func Debug(what LogEventT, who int, format string, a ...interface{}) {
-	if debugVerbosity >= 1 {
+	if verbosity >= 1 {
 		time := time.Since(debugStart).Microseconds()
 		// time /= 100
 		prefix := fmt.Sprintf("%06d %v S%d ", time, string(what), who)
 		format = prefix + format
 		log.Printf(format, a...)
+	}
+}
+
+func assert(expect bool, format string, a ...interface{}) {
+	if !expect {
+		panic(fmt.Sprintf(format, a...))
 	}
 }

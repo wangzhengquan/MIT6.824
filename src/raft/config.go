@@ -222,8 +222,9 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 	if rf == nil {
 		return // ???
 	}
-
+	// log.Printf("S%d applierSnap start", i)
 	for m := range applyCh {
+		// log.Printf("S%d applierSnap -> applyCh msg= %v\n", i, &m)
 		err_msg := ""
 		if m.SnapshotValid {
 			cfg.mu.Lock()
@@ -257,7 +258,9 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 					xlog = append(xlog, cfg.logs[i][j])
 				}
 				e.Encode(xlog)
+				Debug(TestEvent, -1, "Snapshot start")
 				rf.Snapshot(m.CommandIndex, w.Bytes())
+				Debug(TestEvent, -1, "Snapshot end")
 			}
 		} else {
 			// Ignore other types of ApplyMsg.
@@ -292,7 +295,6 @@ func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) {
 		ends[j] = cfg.net.MakeEnd(cfg.endnames[i][j])
 		cfg.net.Connect(cfg.endnames[i][j], j)
 	}
-
 	cfg.mu.Lock()
 
 	cfg.lastApplied[i] = 0
@@ -320,9 +322,7 @@ func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) {
 	cfg.mu.Unlock()
 
 	applyCh := make(chan ApplyMsg)
-
 	rf := Make(ends, i, cfg.saved[i], applyCh)
-
 	cfg.mu.Lock()
 	cfg.rafts[i] = rf
 	cfg.mu.Unlock()
@@ -348,6 +348,7 @@ func (cfg *config) checkFinished() bool {
 }
 
 func (cfg *config) cleanup() {
+	// panic("cleanup ")
 	atomic.StoreInt32(&cfg.finished, 1)
 	for i := 0; i < len(cfg.rafts); i++ {
 		if cfg.rafts[i] != nil {
@@ -575,6 +576,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			if rf != nil {
 				index1, _, ok := rf.Start(cmd)
 				if ok {
+					Debug(TestEvent, starts, "one index1=%d, cmd=%v", index1, cmd)
 					index = index1
 					break
 				}
@@ -587,7 +589,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
-				// log.Printf("nd=%v, expectedServers=%v", nd, expectedServers)
+				// log.Printf("index = %d, cmd=%d cmd1=%v, nd=%v, expectedServers=%v", index, cmd, cmd1, nd, expectedServers)
 				if nd > 0 && nd >= expectedServers {
 
 					// committed

@@ -1129,6 +1129,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 	leader1 := cfg.checkOneLeader()
 
 	for i := 0; i < iters; i++ {
+		// log.Printf("test %d start\n", i)
 		victim := (leader1 + 1) % servers
 		sender := leader1
 		if i%3 == 1 {
@@ -1137,20 +1138,23 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		}
 
 		if disconnect {
+			Debug(TestEvent, victim, "disconnect\n")
 			cfg.disconnect(victim)
 			cfg.one(rand.Int(), servers-1, true)
 		}
 		if crash {
+			// log.Printf("S%d crash\n", victim)
+			Debug(TestEvent, victim, "crash \n")
 			cfg.crash1(victim)
 			cfg.one(rand.Int(), servers-1, true)
 		}
 
 		// perhaps send enough to get a snapshot
 		nn := (SnapShotInterval / 2) + (rand.Int() % SnapShotInterval)
+		Debug(TestEvent, sender, "Start  %d\n", nn)
 		for i := 0; i < nn; i++ {
 			cfg.rafts[sender].Start(rand.Int())
 		}
-
 		// let applier threads catch up with the Start()'s
 		if disconnect == false && crash == false {
 			// make sure all followers have caught up, so that
@@ -1160,23 +1164,31 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		} else {
 			cfg.one(rand.Int(), servers-1, true)
 		}
-
 		if cfg.LogSize() >= MAXLOGSIZE {
 			cfg.t.Fatalf("Log size too large")
 		}
+
 		if disconnect {
-			// reconnect a follower, who maybe behind and
-			// needs to rceive a snapshot to catch up.
+			// log.Printf("%d reconnect \n", victim)
+			Debug(TestEvent, victim, "reconnect a follower, who maybe behind and needs to rceive a snapshot to catch up.\n")
+			// reconnect a follower, who maybe behind and needs to rceive a snapshot to catch up.
 			cfg.connect(victim)
 			cfg.one(rand.Int(), servers, true)
+			// log.Printf("5-1\n")
 			leader1 = cfg.checkOneLeader()
 		}
+
 		if crash {
+			// log.Printf("S%d restart\n", victim)
+			Debug(TestEvent, victim, "restart a follower")
 			cfg.start1(victim, cfg.applierSnap)
 			cfg.connect(victim)
 			cfg.one(rand.Int(), servers, true)
+			// log.Printf("6-1\n")
 			leader1 = cfg.checkOneLeader()
+			// log.Printf("6-2\n")
 		}
+		// time.Sleep(1 * time.Second)
 	}
 	cfg.end()
 }

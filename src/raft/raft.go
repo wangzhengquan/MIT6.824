@@ -48,7 +48,7 @@ const (
 
 const ELECTION_TIMEOUT time.Duration = 300 * time.Millisecond
 
-var HEARTBEAT_TIME_INTERVAL time.Duration = 10
+var HEARTBEAT_TIME_INTERVAL time.Duration = 100
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -260,7 +260,7 @@ func (rf *Raft) readPersist(data []byte) {
 
 func (rf *Raft) logIdxToArrayIdx(index int) int {
 	arrayIndex := index - rf.snapshotIndex
-	assert(arrayIndex >= 0, "index=%d,rf.snapshotIndex=%d, arrayIndex=%d\n", index, rf.snapshotIndex, arrayIndex)
+	Assert(arrayIndex >= 0, "index=%d,rf.snapshotIndex=%d, arrayIndex=%d\n", index, rf.snapshotIndex, arrayIndex)
 	return arrayIndex
 }
 
@@ -390,15 +390,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// “PrevLogIndex log matched” check
 
 	if args.PrevLogIndex == 0 {
-		rf.log = rf.log[:1]
-		rf.log = append(rf.log, args.Entries...)
-		Debug(HeartbeatEvent, rf.me, "append entries =%v\n", len(args.Entries))
+		rf.placeLogEntriesAt(args.PrevLogIndex, args.Entries)
 		reply.Success = true
-		// follower commit
 		rf.followerCommit(args.LeaderCommitIndex)
 	} else {
-		if rf.lastLogIndex() < args.PrevLogIndex {
-			Debug(HeartbeatEvent, rf.me, "could not append entries for rf.lastLogIndex <= args.PrevLogIndex\n")
+		if args.PrevLogIndex > rf.lastLogIndex() {
+			Debug(HeartbeatEvent, rf.me, "could not append entries for args.PrevLogIndex %d > rf.lastLogIndex %d \n",
+				args.PrevLogIndex, rf.lastLogIndex())
 			reply.ConflictTerm = rf.lastLogTerm()
 			reply.ConflictIndex = rf.lastLogIndex()
 			reply.Success = false
@@ -407,35 +405,30 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			i := rf.snapshotIndex - args.PrevLogIndex
 			log.Println("---args.PrevLogIndex < rf.snapshotIndex")
 			// it should be "args.Entries[i-1] == rf.log[0]"
-			assert(args.Entries[i-1].Term == rf.snapshotTerm, "args.Entries[i-1].Term=%d ,rf.snapshotTerm=%d", args.Entries[i-1].Term, rf.snapshotTerm)
+			Assert(args.Entries[i-1].Term == rf.snapshotTerm, "args.Entries[i-1].Term=%d ,rf.snapshotTerm=%d", args.Entries[i-1].Term, rf.snapshotTerm)
 			for ; i < len(args.Entries) && j < len(rf.log); i, j = i+1, j+1 {
 				rf.log[j] = args.Entries[i]
 			}
 			rf.log = append(rf.log, args.Entries[i:]...)
 			reply.Success = true
-			Debug(HeartbeatEvent, rf.me, "append entries args.PrevLogIndex <= rf.snapshotIndex j=%d, append=%v\n", j, len(args.Entries[j:]))
+			Debug(HeartbeatEvent, rf.me, "append entries args.PrevLogIndex < rf.snapshotIndex j=%d, append=%v\n", j, len(args.Entries[j:]))
 			rf.followerCommit(args.LeaderCommitIndex)
 
 		} else if rf.getLogEntry(args.PrevLogIndex).Term != args.PrevLogTerm {
-			Debug(HeartbeatEvent, rf.me, "could not append entries for rf.log[args.PrevLogIndex].Term != args.PrevLogTerm\n")
 			reply.ConflictTerm = rf.getLogEntry(args.PrevLogIndex).Term
 			reply.ConflictIndex = args.PrevLogIndex
+			Debug(HeartbeatEvent, rf.me, "could not append entries for rf.log[PrevLogIndex %d].Term %d != args.PrevLogTerm %d\n",
+				args.PrevLogIndex, reply.ConflictTerm, args.PrevLogTerm)
 
-			assert(rf.logIdxToArrayIdx(args.PrevLogIndex) > 0,
-				"assert rf.logIdxToArrayIdx(args.PrevLogIndex)>0, args.PrevLogIndex=%d, rf.snapshotIndex=%d, rf.log=%+v",
+			Assert(rf.logIdxToArrayIdx(args.PrevLogIndex) > 0,
+				"Assert rf.logIdxToArrayIdx(args.PrevLogIndex)>0, args.PrevLogIndex=%d, rf.snapshotIndex=%d, rf.log=%+v",
 				args.PrevLogIndex, rf.snapshotIndex, rf.log)
 			rf.log = rf.log[:rf.logIdxToArrayIdx(args.PrevLogIndex)]
 
 			reply.Success = false
 		} else {
 			// follower's log matches the leader’s log up to and including the args.prevLogIndex
-			j := 0
-			// overlap part
-			for i := rf.logIdxToArrayIdx(args.PrevLogIndex + 1); i < len(rf.log) && j < len(args.Entries); i, j = i+1, j+1 {
-				rf.log[i] = args.Entries[j]
-			}
-			rf.log = append(rf.log, args.Entries[j:]...)
-			Debug(HeartbeatEvent, rf.me, "append entries j=%d, append=%v\n", j, len(args.Entries[j:]))
+			rf.placeLogEntriesAt(args.PrevLogIndex, args.Entries)
 			reply.Success = true
 			// follower commit
 			rf.followerCommit(args.LeaderCommitIndex)
@@ -444,18 +437,30 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 }
 
+func (rf *Raft) placeLogEntriesAt(index int, entries []LogEntry) {
+	j := 0
+	// overlap part
+	for i := rf.logIdxToArrayIdx(index + 1); i < len(rf.log) && j < len(entries); i, j = i+1, j+1 {
+		rf.log[i] = entries[j]
+	}
+	rf.log = append(rf.log, entries[j:]...)
+	Debug(HeartbeatEvent, rf.me, "append entries from j=%d, append=%v\n", j, len(entries[j:]))
+}
+
 func (rf *Raft) followerCommit(leaderCommitIndex int) {
 	if leaderCommitIndex > rf.commitIndex {
+		var commitIndex int
 		if leaderCommitIndex < rf.lastLogIndex() {
-			rf.commitIndex = leaderCommitIndex
+			commitIndex = leaderCommitIndex
 		} else {
-			rf.commitIndex = rf.lastLogIndex()
+			commitIndex = rf.lastLogIndex()
 		}
+		Debug(CommitEvent, rf.me, "follower commit, old commitIndex=%d, new commitIndex=%d\n",
+			rf.commitIndex, commitIndex)
+		rf.commitIndex = commitIndex
 		rf.persistSate()
 		rf.commitCond.Broadcast()
 	}
-	Debug(CommitEvent, rf.me, "follower commit args.LeaderCommitIndex=%d rf.commitIndex=%d\n",
-		leaderCommitIndex, rf.commitIndex)
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
@@ -506,30 +511,30 @@ func (rf *Raft) applySnapshot() {
 	rf.mu.Lock()
 	lastApplied := rf.lastApplied
 	snapshotIndex := rf.snapshotIndex
-	Debug(SnapEvent, rf.me, "applySnapshot rf.lastApplied=%d, rf.snapshotIndex=%d\n", rf.lastApplied, rf.snapshotIndex)
-	if lastApplied < snapshotIndex {
-		Debug(SnapEvent, rf.me, "applySnapshot before\n")
-		msg := ApplyMsg{
-			CommandValid:  false,
-			SnapshotValid: true,
-			Snapshot:      rf.snapshot,
-			SnapshotTerm:  rf.snapshotTerm,
-			SnapshotIndex: rf.snapshotIndex,
-		}
+	// Debug(SnapEvent, rf.me, "applySnapshot rf.lastApplied=%d, rf.snapshotIndex=%d\n", rf.lastApplied, rf.snapshotIndex)
+	if lastApplied >= snapshotIndex || rf.snapshot == nil || len(rf.snapshot) == 0 {
 		rf.mu.Unlock()
-
-		rf.applyCh <- msg
-		rf.mu.Lock()
-		if snapshotIndex >= rf.snapshotIndex {
-			rf.commitIndex = snapshotIndex
-			rf.lastApplied = rf.commitIndex
-		}
-		rf.mu.Unlock()
-
-		Debug(SnapEvent, rf.me, "applySnapshot after\n")
-	} else {
-		rf.mu.Unlock()
+		return
 	}
+	Debug(SnapEvent, rf.me, "applySnapshot before\n")
+	msg := ApplyMsg{
+		CommandValid:  false,
+		SnapshotValid: true,
+		Snapshot:      rf.snapshot,
+		SnapshotTerm:  rf.snapshotTerm,
+		SnapshotIndex: rf.snapshotIndex,
+	}
+	rf.mu.Unlock()
+
+	rf.applyCh <- msg
+	rf.mu.Lock()
+	if snapshotIndex >= rf.snapshotIndex {
+		rf.commitIndex = snapshotIndex
+		rf.lastApplied = rf.commitIndex
+	}
+	rf.mu.Unlock()
+
+	Debug(SnapEvent, rf.me, "applySnapshot after\n")
 
 }
 
@@ -573,36 +578,55 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	if ok := rf.peers[server].Call("Raft.AppendEntries", args, reply); ok {
 		rf.mu.Lock()
-		Debug(HeartbeatEvent, rf.me, "hearbeat, reply  from %d : reply=%+v.\n",
-			server, reply)
+		if rf.role != LEADER || args.Term != rf.currentTerm || args.PrevLogIndex != rf.nextIndex[server]-1 {
+			rf.mu.Unlock()
+			return
+		}
+		Debug(HeartbeatEvent, rf.me, "hearbeat reply from %d : reply=%+v, request args=%v, rf.currentTerm=%d \n",
+			server, reply, args, rf.currentTerm)
+
 		if reply.Success {
-			if args.PrevLogIndex == rf.nextIndex[server]-1 { // check rf.nextIndex[server] has not been modify by other replys
-				rf.nextIndex[server] += len(args.Entries)
-				rf.matchIndex[server] = rf.nextIndex[server] - 1
+			nextIndex := rf.nextIndex[server] + len(args.Entries)
+			if nextIndex > rf.nextIndex[server] {
+				Debug(HeartbeatEvent, rf.me, "rf.nextIndex[%d] advance, old=%d, new=%d\n",
+					server, rf.nextIndex[server], nextIndex)
+				rf.nextIndex[server] = nextIndex
+				rf.matchIndex[server] = nextIndex - 1
 			}
+
 		} else {
 			if reply.Term > rf.currentTerm {
 				rf.stepDown(reply.Term)
-			} else {
-				if args.PrevLogIndex == rf.nextIndex[server]-1 {
-					if reply.ConflictIndex < rf.snapshotIndex {
-						rf.nextIndex[server] = reply.ConflictIndex + 1
-					} else if rf.getLogEntry(reply.ConflictIndex).Term == reply.ConflictTerm {
-						// this situation could occur when "length of follower's log" <= args.prevLogIndex
-						rf.nextIndex[server] = reply.ConflictIndex + 1
-					} else {
-						// step over all the log with term of rf.log[reply.ConflictIndex]
-						i := rf.logIdxToArrayIdx(reply.ConflictIndex)
-						term := rf.log[i].Term
-						for ; rf.log[i].Term == term && i > 0; i-- {
-						}
-						rf.nextIndex[server] = rf.ArrayIdxToLogIdx(i + 1)
+			} else if reply.ConflictIndex > rf.matchIndex[server] {
+				Assert(rf.matchIndex[server] <= reply.ConflictIndex, "rf.matchIndex[%d]=%d, ConflictIndex=%d",
+					server, rf.matchIndex[server], reply.ConflictIndex)
+
+				oldNextIndex := rf.nextIndex[server]
+				if reply.ConflictIndex < rf.snapshotIndex {
+					rf.nextIndex[server] = reply.ConflictIndex + 1
+				} else if rf.getLogEntry(reply.ConflictIndex).Term == reply.ConflictTerm {
+					// this situation could occur when "length of follower's log" <= args.prevLogIndex
+					rf.nextIndex[server] = reply.ConflictIndex + 1
+				} else {
+					// step over all the log with term of rf.log[reply.ConflictIndex]
+					i := rf.logIdxToArrayIdx(reply.ConflictIndex)
+					term := rf.log[i].Term
+					for ; rf.log[i].Term == term && i > 0; i-- {
 					}
+					rf.nextIndex[server] = rf.ArrayIdxToLogIdx(i + 1)
 				}
-				Debug(HeartbeatEvent, rf.me, "hearbeat, reset rf.nextIndex[%d]=%d.\n",
-					server, rf.nextIndex[server])
+				// if rf.matchIndex[server] > rf.nextIndex[server]-1 {
+				// 	rf.matchIndex[server] = 0
+				// }
+
+				Debug(HeartbeatEvent, rf.me, "hearbeat reply, rf.nextIndex[%d] back , old=%d, new=%d.\n",
+					server, oldNextIndex, rf.nextIndex[server])
+				Assert(rf.matchIndex[server] < rf.nextIndex[server],
+					"sendAppendEntries reply,rf.matchIndex[%d]=%d, prevIndex=%d,",
+					server, rf.matchIndex[server], rf.nextIndex[server]-1)
 			}
 		}
+
 		rf.mu.Unlock()
 	} else {
 		Debug(HeartbeatEvent, rf.me, "hearbeat, no reply from %d. \n", server)
@@ -766,12 +790,12 @@ func (rf *Raft) leaderElection() {
 
 func (rf *Raft) leaderHeartbeats() {
 	for rf.killed() == false {
-		// rf.mu.Lock()
+		rf.mu.Lock()
 		if rf.role != LEADER {
-			// rf.mu.Unlock()
+			rf.mu.Unlock()
 			break
 		}
-		// rf.mu.Unlock()
+		rf.mu.Unlock()
 		rf.leaderLogReplication()
 		time.Sleep(HEARTBEAT_TIME_INTERVAL * time.Millisecond)
 		go rf.leaderCommit()
@@ -794,6 +818,9 @@ func (rf *Raft) leaderLogReplication() {
 			continue
 		}
 		prevLogIndex := rf.nextIndex[peerId] - 1
+		Assert(rf.matchIndex[peerId] <= prevLogIndex,
+			"leaderLogReplication, rf.matchIndex[%d]=%d, prevLogIndex=%d",
+			peerId, rf.matchIndex[peerId], prevLogIndex)
 		if prevLogIndex < rf.snapshotIndex {
 			args := InstallSnapshotArgs{
 				Term:              rf.currentTerm,
@@ -805,7 +832,8 @@ func (rf *Raft) leaderLogReplication() {
 			reply := InstallSnapshotReply{}
 			go rf.sendInstallSnapshot(peerId, &args, &reply)
 
-			Debug(SnapEvent, rf.me, "Leader send InstallSnapshot to S%d with prevLogIndex=%d args=%v\n", peerId, prevLogIndex, &args)
+			Debug(SnapEvent, rf.me, "Leader send InstallSnapshot to S%d with prevLogIndex=%d, matchIndex=%d, args=%v\n\n",
+				peerId, prevLogIndex, rf.matchIndex[peerId], &args)
 		} else {
 			args := AppendEntriesArgs{
 				Term:              rf.currentTerm,
@@ -818,7 +846,8 @@ func (rf *Raft) leaderLogReplication() {
 
 			reply := AppendEntriesReply{}
 			go rf.sendAppendEntries(peerId, &args, &reply)
-			Debug(HeartbeatEvent, rf.me, "Leader send AppendEntries to S%d with rf.snapshotIndex=%d, args=%v\n", peerId, rf.snapshotIndex, &args)
+			Debug(HeartbeatEvent, rf.me, "Leader send AppendEntries to S%d with rf.snapshotIndex=%d, matchIndex=%d, args=%v\n\n",
+				peerId, rf.snapshotIndex, rf.matchIndex[peerId], &args)
 		}
 
 		idle = idle && (prevLogIndex == rf.lastLogIndex())
@@ -828,7 +857,7 @@ func (rf *Raft) leaderLogReplication() {
 	if idle {
 		HEARTBEAT_TIME_INTERVAL = 100
 	} else {
-		HEARTBEAT_TIME_INTERVAL = 10
+		HEARTBEAT_TIME_INTERVAL = 100
 	}
 
 }
@@ -851,9 +880,11 @@ func (rf *Raft) leaderCommit() {
 	if commitIndex <= rf.snapshotIndex {
 		return
 	}
-	Debug(CommitEvent, rf.me, "leader commit check commitIndex = %d\n", commitIndex)
+	Debug(CommitEvent, rf.me, "leader commit check commitIndex = %d log term=%d, rf.commitIndex=%d current term=%d\n",
+		commitIndex, rf.getLogEntry(commitIndex).Term, rf.commitIndex, rf.currentTerm)
 	// Raft never commits log entries from previous terms by count- ing replicas. Only log entries from the leader’s current term are committed by counting replicas;
 	if rf.getLogEntry(commitIndex).Term == rf.currentTerm && commitIndex > rf.commitIndex {
+		Debug(CommitEvent, rf.me, "leader commit old commitIndex = %d, new commitIndex = %d\n", rf.commitIndex, commitIndex)
 		rf.commitIndex = commitIndex
 		rf.persistSate()
 		rf.commitCond.Broadcast()

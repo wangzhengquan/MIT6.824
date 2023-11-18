@@ -918,16 +918,23 @@ func TestFigure8Unreliable2C(t *testing.T) {
 
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
+		Debug(TestEvent, -1, "Start iters=%d\n", iters)
 		if iters == 200 {
 			cfg.setlongreordering(true)
 		}
 		leader := -1
+		Debug(TestEvent, -1, "iters=%d, 1\n", iters)
+		Debug(TestEvent, -1, cfg.serversState())
+
 		for i := 0; i < servers; i++ {
 			_, _, ok := cfg.rafts[i].Start(rand.Int() % 10000)
 			if ok && cfg.connected[i] {
 				leader = i
 			}
 		}
+
+		Debug(TestEvent, leader, "iters=%d, 2\n", iters)
+		Debug(TestEvent, leader, cfg.serversState())
 
 		if (rand.Int() % 1000) < 100 {
 			ms := rand.Int63() % (int64(RaftElectionTimeout/time.Millisecond) / 2)
@@ -936,28 +943,43 @@ func TestFigure8Unreliable2C(t *testing.T) {
 			ms := (rand.Int63() % 13)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
+		Debug(TestEvent, -1, "iters=%d, 3\n", iters)
+		Debug(TestEvent, -1, cfg.serversState())
 
 		if leader != -1 && (rand.Int()%1000) < int(RaftElectionTimeout/time.Millisecond)/2 {
+			Debug(TestEvent, leader, "iters=%d, leader disconnect\n", iters)
 			cfg.disconnect(leader)
 			nup -= 1
 		}
 
+		Debug(TestEvent, -1, "iters=%d, 4\n", iters)
+		Debug(TestEvent, -1, cfg.serversState())
+
 		if nup < 3 {
 			s := rand.Int() % servers
 			if cfg.connected[s] == false {
+				Debug(TestEvent, s, "iters=%d, connect, nup=%d\n", iters, nup)
 				cfg.connect(s)
+				Debug(TestEvent, -1, cfg.serversState())
 				nup += 1
 			}
 		}
+		Debug(TestEvent, -1, "iters=%d, 5\n", iters)
+		Debug(TestEvent, -1, cfg.serversState())
+
 	}
 
+	Debug(TestEvent, -1, "connect all servers\n")
 	for i := 0; i < servers; i++ {
 		if cfg.connected[i] == false {
+			Debug(TestEvent, i, "connect\n")
 			cfg.connect(i)
 		}
 	}
-
+	Debug(TestEvent, -1, cfg.serversState())
+	Debug(TestEvent, -1, "one before\n")
 	cfg.one(rand.Int()%10000, servers, true)
+	Debug(TestEvent, -1, "one after\n")
 
 	cfg.end()
 }
@@ -1129,7 +1151,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 	leader1 := cfg.checkOneLeader()
 
 	for i := 0; i < iters; i++ {
-		// log.Printf("test %d start\n", i)
+		// Debug(TraceEvent, -1, "test %d start\n", i)
 		victim := (leader1 + 1) % servers
 		sender := leader1
 		if i%3 == 1 {

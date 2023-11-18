@@ -148,7 +148,8 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	v := m.Command
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
-			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
+			log.Printf("S%v log: %v; \n S%v log: %v\n", i, cfg.logs[i], j, cfg.logs[j])
+			cfg.printLogAt(m.CommandIndex)
 			// some server has already committed a different value for this entry!
 			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
 				m.CommandIndex, i, m.Command, j, old)
@@ -160,6 +161,18 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 		cfg.maxIndex = m.CommandIndex
 	}
 	return err_msg, prevok
+}
+
+func (cfg *config) printLogAt(index int) {
+	log.Printf("servers's log entry at %d\n", index)
+	for j, logmap := range cfg.logs {
+		if cmd, ok := logmap[index]; ok {
+			log.Printf("S%d: %v\n", j, cmd)
+		} else {
+			log.Printf("S%d: nil\n", j)
+		}
+	}
+
 }
 
 // applier reads message from apply ch and checks that they match the log
@@ -655,4 +668,14 @@ func (cfg *config) LogSize() int {
 		}
 	}
 	return logsize
+}
+
+func (cfg *config) serversState() string {
+	str := "Servers State:{"
+	for i, connected := range cfg.connected {
+		str += fmt.Sprintf("%d connected=%v, ", i, connected)
+	}
+	str += "}\n"
+	return str
+
 }

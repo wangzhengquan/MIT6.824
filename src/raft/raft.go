@@ -437,6 +437,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				"Assert rf.logIdxToArrayIdx(args.PrevLogIndex)>0, args.PrevLogIndex=%d, rf.snapshotIndex=%d, rf.log=%+v",
 				args.PrevLogIndex, rf.snapshotIndex, rf.log)
 			rf.log = rf.log[:rf.logIdxToArrayIdx(args.PrevLogIndex)]
+			rf.persistSate()
 			reply.Success = false
 		} else {
 			// follower's log matches the leader’s log up to and including the args.prevLogIndex
@@ -595,7 +596,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	if ok := rf.peers[server].Call("Raft.AppendEntries", args, reply); ok {
 		rf.mu.Lock()
-		if rf.role != LEADER || args.Term != rf.currentTerm || args.PrevLogIndex != rf.nextIndex[server]-1 {
+		if rf.role != LEADER || args.Term != rf.currentTerm {
 			rf.mu.Unlock()
 			return
 		}
@@ -604,8 +605,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 		if reply.Success {
 			oldNextIndex := rf.nextIndex[server]
-			rf.nextIndex[server] += len(args.Entries)
-			rf.matchIndex[server] = rf.nextIndex[server] - 1
+			matchIndex := args.PrevLogIndex + len(args.Entries)
+			if rf.matchIndex[server] < matchIndex {
+				rf.matchIndex[server] = matchIndex
+			}
+			rf.nextIndex[server] = rf.matchIndex[server] + 1
 			Debug(HeartbeatEvent, rf.me, "rf.nextIndex[%d] advance, old=%d, new=%d\n",
 				server, oldNextIndex, rf.nextIndex[server])
 

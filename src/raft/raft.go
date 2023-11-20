@@ -93,11 +93,6 @@ type RequestVoteArgs struct {
 	LastLogTerm  int // term of candidate’s last log entry
 }
 
-func (args *RequestVoteArgs) String() string {
-	return fmt.Sprintf("{Term: %v, CandidateId: %v, LastLogIndex: %v, LastLogTerm: %v }",
-		args.Term, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
-}
-
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
@@ -262,9 +257,8 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 func (rf *Raft) logIdxToArrayIdx(index int) int {
-	arrayIndex := index - rf.snapshotIndex
-	Assert(arrayIndex >= 0, "index=%d,rf.snapshotIndex=%d, arrayIndex=%d\n", index, rf.snapshotIndex, arrayIndex)
-	return arrayIndex
+	Assert(index >= rf.snapshotIndex, "index=%d,rf.snapshotIndex=%d\n", index, rf.snapshotIndex)
+	return index - rf.snapshotIndex
 }
 
 func (rf *Raft) arrayIdxToLogIdx(index int) int {
@@ -344,6 +338,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			args.CandidateId, args.Term, rf.currentTerm)
 		return
 	}
+
+	Debug(VoteEvent, rf.me, "received vote request, args=%+v.\n", args)
 
 	if args.Term > rf.currentTerm {
 		rf.stepDown(args.Term)
@@ -526,14 +522,13 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 func (rf *Raft) applySnapshot() {
 	rf.mu.Lock()
-	lastApplied := rf.lastApplied
 	snapshotIndex := rf.snapshotIndex
 	// Debug(SnapEvent, rf.me, "applySnapshot rf.lastApplied=%d, rf.snapshotIndex=%d\n", rf.lastApplied, rf.snapshotIndex)
-	if lastApplied >= snapshotIndex || rf.snapshot == nil || len(rf.snapshot) == 0 {
+	if snapshotIndex <= rf.lastApplied || rf.snapshot == nil || len(rf.snapshot) == 0 {
 		rf.mu.Unlock()
 		return
 	}
-	Debug(SnapEvent, rf.me, "applySnapshot before\n")
+	Debug(SnapEvent, rf.me, "applySnapshot %d before\n", snapshotIndex)
 	msg := ApplyMsg{
 		CommandValid:  false,
 		SnapshotValid: true,
@@ -545,13 +540,14 @@ func (rf *Raft) applySnapshot() {
 
 	rf.applyCh <- msg
 	rf.mu.Lock()
-	if snapshotIndex >= rf.snapshotIndex {
-		rf.commitIndex = snapshotIndex
-		rf.lastApplied = rf.commitIndex
+	Debug(SnapEvent, rf.me, "applySnapshot after. snapshotIndex=%d, lastApplied old=%d\n", snapshotIndex, rf.lastApplied)
+	if snapshotIndex >= rf.snapshotIndex && snapshotIndex > rf.lastApplied {
+		if snapshotIndex > rf.commitIndex {
+			rf.commitIndex = snapshotIndex
+		}
+		rf.lastApplied = snapshotIndex
 	}
 	rf.mu.Unlock()
-
-	Debug(SnapEvent, rf.me, "applySnapshot after\n")
 
 }
 
@@ -793,6 +789,7 @@ func (rf *Raft) leaderElection() {
 
 		rf.mu.Lock()
 		// a trick bug in TestFigure8Unreliable2C since I didn't check rf.currentTerm before then
+		// whiout this check it may be elected success with and old term, but now run as a leader with new term
 		if rf.currentTerm == requestTerm && rf.role == CANDIDATE && voteGrantedCount >= majority {
 			Debug(VoteEvent, rf.me, "Elected success with term %d\n", requestTerm)
 
@@ -908,8 +905,6 @@ func (rf *Raft) leaderCommit() {
 	if commitIndex <= rf.snapshotIndex {
 		return
 	}
-	// Debug(CommitEvent, rf.me, "leader commit check commitIndex=%d log term=%d, rf.commitIndex=%d current term=%d\n",
-	// 	commitIndex, rf.getLogEntry(commitIndex).Term, rf.commitIndex, rf.currentTerm)
 	// Raft never commits log entries from previous terms by count- ing replicas. Only log entries from the leader’s current term are committed by counting replicas;
 	if rf.getLogEntry(commitIndex).Term == rf.currentTerm && commitIndex > rf.commitIndex {
 		Debug(CommitEvent, rf.me, "leader commit, old commitIndex = %d, new commitIndex = %d\n", rf.commitIndex, commitIndex)
@@ -939,7 +934,7 @@ func (rf *Raft) leaderCommit() {
 func (rf *Raft) applyCommitToStateMachine() {
 	for rf.killed() == false {
 		rf.mu.Lock()
-		if rf.lastApplied >= rf.commitIndex {
+		if rf.lastApplied >= rf.commitIndex || rf.lastApplied < rf.snapshotIndex {
 			rf.commitCond.Wait()
 			rf.mu.Unlock()
 		} else {
@@ -961,7 +956,6 @@ func (rf *Raft) applyCommitToStateMachine() {
 		}
 
 	}
-
 }
 
 // the service or tester wants to create a Raft server. the ports

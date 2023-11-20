@@ -306,11 +306,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	Debug(SnapEvent, rf.me, "Snapshot start index=%d\n", index)
-
 	if index <= rf.snapshotIndex {
 		return
 	}
+	Debug(SnapEvent, rf.me, "Snapshot start index=%d\n", index)
 	rf.snapshot = snapshot
 	arrayIndex := rf.logIdxToArrayIdx(index)
 	rf.snapshotTerm = rf.log[arrayIndex].Term
@@ -360,8 +359,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			Debug(VoteEvent, rf.me, "Grant vote to %d.\n", args.CandidateId)
 			rf.votedFor = args.CandidateId
 			rf.resetElectionTimer()
-			reply.VoteGranted = true
 			rf.persistSate()
+			reply.VoteGranted = true
 		} else {
 			Debug(VoteEvent, rf.me, "Voter denies its vote for its own log is more up-to-date than that of the candidate S%d.\n",
 				args.CandidateId)
@@ -741,11 +740,13 @@ func (rf *Raft) leaderElection() {
 	if rf.role == CANDIDATE && time.Since(rf.lastHeartbeat) >= ELECTION_TIMEOUT {
 		Debug(VoteEvent, rf.me, "Leader election start\n")
 		rf.currentTerm++
+		requestTerm := rf.currentTerm
 		rf.votedFor = rf.me
 		rf.persistSate()
 		rf.resetElectionTimer()
 
-		ch := make(chan *RequestVoteReply, len(rf.peers)/2)
+		// ch := make(chan *RequestVoteReply, len(rf.peers)/2)
+		ch := make(chan *RequestVoteReply)
 
 		for peerId := 0; peerId < len(rf.peers); peerId++ {
 			if peerId == rf.me {
@@ -772,7 +773,8 @@ func (rf *Raft) leaderElection() {
 			if reply != nil {
 				if reply.VoteGranted {
 					voteGrantedCount++
-					Debug(VoteEvent, rf.me, "vote reiceved granted reply, count = %d\n", voteGrantedCount)
+					Debug(VoteEvent, rf.me, "vote reiceved granted reply, count=%d, requestTerm=%d, rf.currentTerm=%d\n",
+						voteGrantedCount, requestTerm, rf.currentTerm)
 				} else {
 					rf.mu.Lock()
 					if reply.Term > rf.currentTerm {
@@ -790,8 +792,9 @@ func (rf *Raft) leaderElection() {
 		}
 
 		rf.mu.Lock()
-		if rf.role == CANDIDATE && voteGrantedCount >= majority {
-			Debug(VoteEvent, rf.me, "Elected success with term %d\n", rf.currentTerm)
+		// a trick bug in TestFigure8Unreliable2C since I didn't check rf.currentTerm before then
+		if rf.currentTerm == requestTerm && rf.role == CANDIDATE && voteGrantedCount >= majority {
+			Debug(VoteEvent, rf.me, "Elected success with term %d\n", requestTerm)
 
 			rf.role = LEADER
 			rf.nextIndex = make([]int, len(rf.peers))
@@ -802,7 +805,7 @@ func (rf *Raft) leaderElection() {
 
 			go rf.leaderHeartbeats()
 		} else {
-			Debug(VoteEvent, rf.me, "Elected failed with term %d\n", rf.currentTerm)
+			Debug(VoteEvent, rf.me, "Elected failed with term %d\n", requestTerm)
 		}
 		rf.mu.Unlock()
 	} else {
@@ -905,11 +908,11 @@ func (rf *Raft) leaderCommit() {
 	if commitIndex <= rf.snapshotIndex {
 		return
 	}
-	Debug(CommitEvent, rf.me, "leader commit check commitIndex = %d log term=%d, rf.commitIndex=%d current term=%d\n",
-		commitIndex, rf.getLogEntry(commitIndex).Term, rf.commitIndex, rf.currentTerm)
+	// Debug(CommitEvent, rf.me, "leader commit check commitIndex=%d log term=%d, rf.commitIndex=%d current term=%d\n",
+	// 	commitIndex, rf.getLogEntry(commitIndex).Term, rf.commitIndex, rf.currentTerm)
 	// Raft never commits log entries from previous terms by count- ing replicas. Only log entries from the leader’s current term are committed by counting replicas;
 	if rf.getLogEntry(commitIndex).Term == rf.currentTerm && commitIndex > rf.commitIndex {
-		Debug(CommitEvent, rf.me, "leader commit old commitIndex = %d, new commitIndex = %d\n", rf.commitIndex, commitIndex)
+		Debug(CommitEvent, rf.me, "leader commit, old commitIndex = %d, new commitIndex = %d\n", rf.commitIndex, commitIndex)
 		rf.commitIndex = commitIndex
 		rf.commitCond.Broadcast()
 	}
@@ -958,7 +961,6 @@ func (rf *Raft) applyCommitToStateMachine() {
 		}
 
 	}
-	// log.Printf("S%d applyCommitToStateMachine finished\n", rf.me)
 
 }
 

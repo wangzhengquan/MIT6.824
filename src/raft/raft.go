@@ -290,6 +290,7 @@ func (rf *Raft) stepDown(term int) {
 	rf.currentTerm = term
 	rf.role = FOLLOWER
 	rf.votedFor = -1
+	rf.persistSate()
 }
 
 // the service says it has created a snapshot that has
@@ -411,15 +412,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			j := 1
 			i := rf.snapshotIndex - args.PrevLogIndex
 			log.Println("---args.PrevLogIndex < rf.snapshotIndex")
-			// it should be "args.Entries[i-1] == rf.log[0]"
-			Assert(args.Entries[i-1].Term == rf.snapshotTerm, "args.Entries[i-1].Term=%d ,rf.snapshotTerm=%d", args.Entries[i-1].Term, rf.snapshotTerm)
-			for ; i < len(args.Entries) && j < len(rf.log); i, j = i+1, j+1 {
-				rf.log[j] = args.Entries[i]
+			if len(args.Entries) > i {
+				// it should be "args.Entries[i-1] == rf.log[0]"
+				Assert(args.Entries[i-1].Term == rf.snapshotTerm, "args.Entries[i-1].Term=%d ,rf.snapshotTerm=%d", args.Entries[i-1].Term, rf.snapshotTerm)
+				for ; i < len(args.Entries) && j < len(rf.log); i, j = i+1, j+1 {
+					rf.log[j] = args.Entries[i]
+				}
+				rf.log = append(rf.log, args.Entries[i:]...)
+				rf.persistSate()
+				Debug(HeartbeatEvent, rf.me, "approve append entries , args.PrevLogIndex < rf.snapshotIndex j=%d, append=%v\n", j, len(args.Entries[j:]))
+				rf.followerCommit(args.LeaderCommitIndex)
 			}
-			rf.log = append(rf.log, args.Entries[i:]...)
-			rf.persistSate()
-			Debug(HeartbeatEvent, rf.me, "approve append entries , args.PrevLogIndex < rf.snapshotIndex j=%d, append=%v\n", j, len(args.Entries[j:]))
-			rf.followerCommit(args.LeaderCommitIndex)
+
 			reply.Success = true
 
 		} else if rf.getLogEntry(args.PrevLogIndex).Term != args.PrevLogTerm {
@@ -692,6 +696,7 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 	}
 	rf.log = append(rf.log, logEntry)
 	rf.persistSate()
+	go rf.leaderLogReplication()
 	return
 }
 
@@ -720,7 +725,7 @@ func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// pause for a random amount of time between 50 and 350 milliseconds.
 		time.Sleep(time.Duration(50+rand.Int63n(300)) * time.Millisecond)
-		// leaderElection run in a seperate goroutine so that another election preocess can start when this election process timeout with out a result
+		// leaderElection run in a seperate goroutine so that another election preocess can start when this election process was timeout with out a result
 		go rf.leaderElection()
 	}
 	// log.Printf("S%d ticker finished\n", rf.me)
@@ -740,9 +745,9 @@ func (rf *Raft) leaderElection() {
 		rf.votedFor = rf.me
 		rf.persistSate()
 		rf.resetElectionTimer()
-
-		// ch := make(chan *RequestVoteReply, len(rf.peers)/2)
-		ch := make(chan *RequestVoteReply)
+		// set chan size >= len(rf.peers)/2 so that when func that read from chan finished the function that write to chan can return and release the resource without been blocked
+		ch := make(chan *RequestVoteReply, len(rf.peers)/2)
+		// ch := make(chan *RequestVoteReply)
 
 		for peerId := 0; peerId < len(rf.peers); peerId++ {
 			if peerId == rf.me {
@@ -813,15 +818,15 @@ func (rf *Raft) leaderElection() {
 
 func (rf *Raft) leaderHeartbeats() {
 	for rf.killed() == false {
-		rf.mu.Lock()
+		// rf.mu.Lock()
 		if rf.role != LEADER {
-			rf.mu.Unlock()
+			// rf.mu.Unlock()
 			break
 		}
-		rf.mu.Unlock()
+		// rf.mu.Unlock()
 		rf.leaderLogReplication()
 		time.Sleep(HEARTBEAT_TIME_INTERVAL * time.Millisecond)
-		go rf.leaderCommit()
+		rf.leaderCommit()
 
 	}
 	// log.Printf("S%d leaderHeartbeats finished\n", rf.me)
@@ -913,7 +918,7 @@ func (rf *Raft) leaderCommit() {
 	}
 }
 
-// func (rf *Raft) applyCommitToStateMachine() {
+// func (rf *Raft) applier() {
 // 	for rf.killed() == false {
 // 		commitIndex := <-rf.commitCh
 // 		for rf.lastApplied < commitIndex {
@@ -931,7 +936,7 @@ func (rf *Raft) leaderCommit() {
 // 	}
 // }
 
-func (rf *Raft) applyCommitToStateMachine() {
+func (rf *Raft) applier() {
 	for rf.killed() == false {
 		rf.mu.Lock()
 		if rf.lastApplied >= rf.commitIndex || rf.lastApplied < rf.snapshotIndex {
@@ -990,7 +995,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.resetElectionTimer()
 	// start ticker goroutine to start elections
 	go rf.ticker()
-	go rf.applyCommitToStateMachine()
+	go rf.applier()
 
 	return rf
 }

@@ -185,7 +185,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		// and the log's length always >= 1
 		rf.log = Log{[]Entry{{Term: args.LastIncludedTerm}}, args.LastIncludedIndex}
 	}
-	// log.Printf("S%d InstallSnapshot after rf.log = %+v\n", rf.me, rf.log)
 	rf.snapshotIndex = args.LastIncludedIndex
 	rf.snapshotTerm = args.LastIncludedTerm
 	rf.snapshot = args.Data
@@ -198,26 +197,29 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	if ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply); ok {
-		Debug(SnapEvent, rf.me, "sendInstallSnapshot : reply from %d, reply.Term=%d, rf.currentTerm=%d", server, reply.Term, rf.currentTerm)
+		Debug(SnapEvent, rf.me, "sendInstallSnapshot: reply from %d, reply.Term=%d, rf.currentTerm=%d", server, reply.Term, rf.currentTerm)
 		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if rf.role != LEADER || args.Term != rf.currentTerm {
+			return
+		}
 		if reply.Term > rf.currentTerm {
 			rf.stepDown(reply.Term)
-		} else {
-			rf.nextIndex[server] = args.LastIncludedIndex + 1
+		} else if rf.matchIndex[server] < args.LastIncludedIndex {
 			rf.matchIndex[server] = args.LastIncludedIndex
+			rf.nextIndex[server] = args.LastIncludedIndex + 1
 		}
-		rf.mu.Unlock()
 	}
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	if ok := rf.peers[server].Call("Raft.AppendEntries", args, reply); ok {
 		rf.mu.Lock()
+		defer rf.mu.Unlock()
 		if rf.role != LEADER || args.Term != rf.currentTerm {
-			rf.mu.Unlock()
 			return
 		}
-		Debug(HeartbeatEvent, rf.me, "hearbeat reply from %d : reply=%+v, request args=%v, rf.currentTerm=%d \n",
+		Debug(HeartbeatEvent, rf.me, "sendAppendEntries: reply from %d : reply=%+v, request args=%v, rf.currentTerm=%d \n",
 			server, reply, args, rf.currentTerm)
 
 		if reply.Success {
@@ -230,7 +232,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			rf.nextIndex[server] = rf.matchIndex[server] + 1
 			Debug(HeartbeatEvent, rf.me, "rf.nextIndex[%d] advance, old=%d, new=%d\n",
 				server, oldNextIndex, rf.nextIndex[server])
-
 		} else {
 			if reply.Term > rf.currentTerm {
 				rf.stepDown(reply.Term)
@@ -257,24 +258,19 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 					rf.nextIndex[server] = rf.matchIndex[server] + 1
 				}
 
-				Debug(HeartbeatEvent, rf.me, "hearbeat reply, rf.nextIndex[%d] go back , old=%d, new=%d.\n",
+				Debug(HeartbeatEvent, rf.me, "sendAppendEntries reply, rf.nextIndex[%d] back up, old=%d, new=%d.\n",
 					server, oldNextIndex, rf.nextIndex[server])
 				Assert(rf.matchIndex[server] < rf.nextIndex[server],
-					"sendAppendEntries reply,rf.matchIndex[%d]=%d, rf.nextIndex=%d\n",
+					"sendAppendEntries reply, rf.matchIndex[%d]=%d, rf.nextIndex=%d\n",
 					server, rf.matchIndex[server], rf.nextIndex[server])
 			}
 		}
-
-		rf.mu.Unlock()
 	} else {
-		Debug(HeartbeatEvent, rf.me, "hearbeat, no reply from %d. \n", server)
+		Debug(HeartbeatEvent, rf.me, "sendAppendEntries, no reply from %d. \n", server)
 	}
 }
 
 func (rf *Raft) leaderLogReplication() {
-	// if rf.role != LEADER {
-	// 	return
-	// }
 	Debug(HeartbeatEvent, rf.me, "Leader send heart beats")
 	idle := (rf.commitIndex == rf.log.lastIndex())
 

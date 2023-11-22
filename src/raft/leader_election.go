@@ -1,6 +1,9 @@
 package raft
 
-import "time"
+import (
+	"math/rand"
+	"time"
+)
 
 const ELECTION_TIMEOUT time.Duration = 300 * time.Millisecond
 
@@ -186,4 +189,14 @@ func (rf *Raft) becomeLeader() {
 	rf.matchIndex = make([]int, len(rf.peers))
 
 	go rf.leaderHeartbeats()
+}
+
+func (rf *Raft) ticker() {
+	for rf.killed() == false {
+		// pause for a random amount of time between 50 and 350 milliseconds.
+		time.Sleep(time.Duration(100+rand.Int63n(300)) * time.Millisecond)
+		// leaderElection run in a seperate goroutine so that another election preocess can start when this election process was timeout with out a result
+		go rf.leaderElection()
+	}
+	// log.Printf("S%d ticker finished\n", rf.me)
 }

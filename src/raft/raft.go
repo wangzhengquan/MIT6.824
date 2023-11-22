@@ -26,7 +26,6 @@ import (
 	//	"bytes"
 
 	"bytes"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -225,16 +224,6 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
-}
-
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
-		// pause for a random amount of time between 50 and 350 milliseconds.
-		time.Sleep(time.Duration(300+rand.Int63n(300)) * time.Millisecond)
-		// leaderElection run in a seperate goroutine so that another election preocess can start when this election process was timeout with out a result
-		go rf.leaderElection()
-	}
-	// log.Printf("S%d ticker finished\n", rf.me)
 }
 
 // the service or tester wants to create a Raft server. the ports

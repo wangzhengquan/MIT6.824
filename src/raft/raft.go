@@ -26,7 +26,6 @@ import (
 	//	"bytes"
 
 	"bytes"
-	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -43,104 +42,6 @@ const (
 	FOLLOWER  RoleT = 1
 	CANDIDATE RoleT = 2
 )
-
-const ELECTION_TIMEOUT time.Duration = 300 * time.Millisecond
-
-var HEARTBEAT_TIME_INTERVAL time.Duration = 100
-
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-//
-// in part 2D you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
-type ApplyMsg struct {
-	CommandValid bool
-	Command      interface{}
-	CommandIndex int
-
-	// For 2D:
-	SnapshotValid bool
-	Snapshot      []byte
-	SnapshotTerm  int
-	SnapshotIndex int
-}
-
-func (args *ApplyMsg) String() string {
-	var str string
-	if args.CommandValid {
-		str = fmt.Sprintf("{CommandValid: %v, Command: %v, CommandIndex: %v}",
-			args.CommandValid, args.Command, args.CommandIndex)
-	} else if args.SnapshotValid {
-		str = fmt.Sprintf("{ SnapshotValid: %v, SnapshotTerm: %v, SnapshotIndex: %v, Snapshot:%v}",
-			args.SnapshotValid, args.SnapshotTerm, args.SnapshotIndex, len(args.Snapshot))
-	}
-	return str
-}
-
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term         int // candidate’s term
-	CandidateId  int // candidate requesting vote
-	LastLogIndex int // index of candidate’s last log entry
-	LastLogTerm  int // term of candidate’s last log entry
-}
-
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term        int  // currentTerm, for candidate to update itself
-	VoteGranted bool // true means candidate received vote
-
-}
-
-type AppendEntriesArgs struct {
-	Term              int     // leader’s term
-	LeaderId          int     // so follower can redirect clients
-	PrevLogIndex      int     // index of log entry immediately preceding new ones
-	PrevLogTerm       int     // term of prevLogIndex entry
-	Entries           []Entry // log entries to store (empty for heartbeat; may send more than one for efficiency)
-	LeaderCommitIndex int     // leader’s commitIndex
-}
-
-func (args *AppendEntriesArgs) String() string {
-	return fmt.Sprintf("{Term: %v, LeaderId: %v, PrevLogIndex: %v, PrevLogTerm: %v, Entries: %v, LeaderCommitIndex:%v }",
-		args.Term, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.LeaderCommitIndex)
-}
-
-type AppendEntriesReply struct {
-	Term          int // currentTerm, for leader to update itself
-	ConflictTerm  int // term of the conflicting entry
-	ConflictIndex int
-	Success       bool // true if follower contained entry matching prevLogIndex and prevLogTerm
-
-	LeaderId int // for debug
-}
-
-type InstallSnapshotArgs struct {
-	Term              int    // leader’s term
-	LeaderId          int    // so follower can redirect clients
-	LastIncludedIndex int    // the snapshot replaces all entries up through and including this index
-	LastIncludedTerm  int    // term of lastIncludedIndex
-	Data              []byte // raw bytes of the snapshot chunk, starting at offset
-	// offset int // byte offset where chunk is positioned in the snapshot file
-	// done bool  // raw bytes of the snapshot chunk, starting at offset
-}
-
-func (args *InstallSnapshotArgs) String() string {
-	return fmt.Sprintf("{Term: %v, LeaderId: %v, LastIncludedIndex: %v, LastIncludedTerm: %v, Data: %v }",
-		args.Term, args.LeaderId, args.LastIncludedIndex, args.LastIncludedTerm, len(args.Data))
-}
-
-type InstallSnapshotReply struct {
-	Term int // currentTerm, for leader to update itself
-}
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -329,30 +230,11 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// pause for a random amount of time between 50 and 350 milliseconds.
-		time.Sleep(time.Duration(50+rand.Int63n(300)) * time.Millisecond)
+		time.Sleep(time.Duration(300+rand.Int63n(300)) * time.Millisecond)
 		// leaderElection run in a seperate goroutine so that another election preocess can start when this election process was timeout with out a result
 		go rf.leaderElection()
 	}
 	// log.Printf("S%d ticker finished\n", rf.me)
-}
-
-func (rf *Raft) leaderHeartbeats() {
-	for rf.killed() == false {
-		rf.mu.Lock()
-		if rf.role == LEADER {
-			rf.leaderLogReplication()
-			rf.mu.Unlock()
-		} else {
-			rf.mu.Unlock()
-			break
-		}
-
-		time.Sleep(HEARTBEAT_TIME_INTERVAL * time.Millisecond)
-		rf.mu.Lock()
-		rf.leaderCommit()
-		rf.mu.Unlock()
-	}
-	// log.Printf("S%d leaderHeartbeats finished\n", rf.me)
 }
 
 // the service or tester wants to create a Raft server. the ports

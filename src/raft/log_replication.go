@@ -1,6 +1,54 @@
 package raft
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+	"time"
+)
+
+var HEARTBEAT_TIME_INTERVAL time.Duration = 100
+
+type AppendEntriesArgs struct {
+	Term              int     // leader’s term
+	LeaderId          int     // so follower can redirect clients
+	PrevLogIndex      int     // index of log entry immediately preceding new ones
+	PrevLogTerm       int     // term of prevLogIndex entry
+	Entries           []Entry // log entries to store (empty for heartbeat; may send more than one for efficiency)
+	LeaderCommitIndex int     // leader’s commitIndex
+}
+
+func (args *AppendEntriesArgs) String() string {
+	return fmt.Sprintf("{Term: %v, LeaderId: %v, PrevLogIndex: %v, PrevLogTerm: %v, Entries: %v, LeaderCommitIndex:%v }",
+		args.Term, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.LeaderCommitIndex)
+}
+
+type AppendEntriesReply struct {
+	Term          int // currentTerm, for leader to update itself
+	ConflictTerm  int // term of the conflicting entry
+	ConflictIndex int
+	Success       bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+
+	LeaderId int // for debug
+}
+
+type InstallSnapshotArgs struct {
+	Term              int    // leader’s term
+	LeaderId          int    // so follower can redirect clients
+	LastIncludedIndex int    // the snapshot replaces all entries up through and including this index
+	LastIncludedTerm  int    // term of lastIncludedIndex
+	Data              []byte // raw bytes of the snapshot chunk, starting at offset
+	// offset int // byte offset where chunk is positioned in the snapshot file
+	// done bool  // raw bytes of the snapshot chunk, starting at offset
+}
+
+func (args *InstallSnapshotArgs) String() string {
+	return fmt.Sprintf("{Term: %v, LeaderId: %v, LastIncludedIndex: %v, LastIncludedTerm: %v, Data: %v }",
+		args.Term, args.LeaderId, args.LastIncludedIndex, args.LastIncludedTerm, len(args.Data))
+}
+
+type InstallSnapshotReply struct {
+	Term int // currentTerm, for leader to update itself
+}
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
@@ -104,7 +152,63 @@ func (rf *Raft) followerCommit(leaderCommitIndex int) {
 	}
 }
 
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply.Term = rf.currentTerm
+	if args.Term < rf.currentTerm {
+		Debug(SnapEvent, rf.me, "reject InstallSnapshot from %d, for args.term %d < current term %d\n",
+			args.LeaderId, args.Term, rf.currentTerm)
+		return
+	}
+
+	Debug(SnapEvent, rf.me, "Recieved InstallSnapshot from %d, args=%v\n",
+		args.LeaderId, args)
+
+	rf.resetElectionTimer()
+
+	if args.Term > rf.currentTerm || rf.role == CANDIDATE {
+		rf.stepDown(args.Term)
+	}
+
+	if rf.snapshotIndex >= args.LastIncludedIndex || rf.lastApplied >= args.LastIncludedIndex {
+		return
+	}
+	// log.Printf("S%d InstallSnapshot before , rf.snapshotIndex=%d, rf.lastLogIndex=%d,  args.LastIncludedIndex=%d, rf.log = %+v\n",
+	// rf.me, rf.snapshotIndex, rf.log.lastIndex(), args.LastIncludedIndex, rf.log)
+	if rf.log.lastIndex() > args.LastIncludedIndex {
+		// keep the log entry at snapshotIndex as the first log entry of the sliced log,
+		// and the log's length always >= 1
+		rf.log.cutOffHead(args.LastIncludedIndex)
+	} else {
+		// keep the log entry at snapshotIndex as the first log entry of the sliced log,
+		// and the log's length always >= 1
+		rf.log = Log{[]Entry{{Term: args.LastIncludedTerm}}, args.LastIncludedIndex}
+	}
+	// log.Printf("S%d InstallSnapshot after rf.log = %+v\n", rf.me, rf.log)
+	rf.snapshotIndex = args.LastIncludedIndex
+	rf.snapshotTerm = args.LastIncludedTerm
+	rf.snapshot = args.Data
+	rf.persist()
+	rf.applyCond.Broadcast()
+
+}
+
 // =============leader================
+
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	if ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply); ok {
+		Debug(SnapEvent, rf.me, "sendInstallSnapshot : reply from %d, reply.Term=%d, rf.currentTerm=%d", server, reply.Term, rf.currentTerm)
+		rf.mu.Lock()
+		if reply.Term > rf.currentTerm {
+			rf.stepDown(reply.Term)
+		} else {
+			rf.nextIndex[server] = args.LastIncludedIndex + 1
+			rf.matchIndex[server] = args.LastIncludedIndex
+		}
+		rf.mu.Unlock()
+	}
+}
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	if ok := rf.peers[server].Call("Raft.AppendEntries", args, reply); ok {
@@ -121,6 +225,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			matchIndex := args.PrevLogIndex + len(args.Entries)
 			if rf.matchIndex[server] < matchIndex {
 				rf.matchIndex[server] = matchIndex
+				rf.leaderCommit()
 			}
 			rf.nextIndex[server] = rf.matchIndex[server] + 1
 			Debug(HeartbeatEvent, rf.me, "rf.nextIndex[%d] advance, old=%d, new=%d\n",
@@ -246,4 +351,20 @@ func (rf *Raft) leaderCommit() {
 		rf.commitIndex = commitIndex
 		rf.applyCond.Broadcast()
 	}
+}
+
+func (rf *Raft) leaderHeartbeats() {
+	for rf.killed() == false {
+		rf.mu.Lock()
+		if rf.role == LEADER {
+			rf.leaderLogReplication()
+			rf.mu.Unlock()
+		} else {
+			rf.mu.Unlock()
+			break
+		}
+
+		time.Sleep(HEARTBEAT_TIME_INTERVAL * time.Millisecond)
+	}
+	// log.Printf("S%d leaderHeartbeats finished\n", rf.me)
 }

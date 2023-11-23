@@ -200,7 +200,7 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 		Debug(SnapEvent, rf.me, "sendInstallSnapshot: reply from %d, reply.Term=%d, rf.currentTerm=%d", server, reply.Term, rf.currentTerm)
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		if rf.role != LEADER || args.Term != rf.currentTerm {
+		if args.Term != rf.currentTerm {
 			return
 		}
 		if reply.Term > rf.currentTerm {
@@ -216,7 +216,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	if ok := rf.peers[server].Call("Raft.AppendEntries", args, reply); ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		if rf.role != LEADER || args.Term != rf.currentTerm {
+		if args.Term != rf.currentTerm {
 			return
 		}
 		Debug(HeartbeatEvent, rf.me, "sendAppendEntries: reply from %d : reply=%+v, request args=%v, rf.currentTerm=%d \n",

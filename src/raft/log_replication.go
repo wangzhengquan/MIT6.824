@@ -317,11 +317,11 @@ func (rf *Raft) leaderLogReplication() {
 	}
 
 	// tune heartbeat interval base on if having more logs to send
-	if idle {
-		HEARTBEAT_TIME_INTERVAL = 100
-	} else {
-		HEARTBEAT_TIME_INTERVAL = 100
-	}
+	// if idle {
+	// 	HEARTBEAT_TIME_INTERVAL = 10
+	// } else {
+	// 	HEARTBEAT_TIME_INTERVAL = 10
+	// }
 
 }
 

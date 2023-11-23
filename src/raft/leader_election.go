@@ -95,18 +95,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, ch chan *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, ch chan *RequestVoteReply) {
+	reply := RequestVoteReply{}
+	ok := rf.peers[server].Call("Raft.RequestVote", args, &reply)
 	if ok {
-		ch <- reply
+		ch <- &reply
 	} else {
 		ch <- nil
 	}
-	return ok
 }
 
 func (rf *Raft) leaderElection() {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	if rf.role == FOLLOWER && time.Since(rf.lastHeartbeat) >= ELECTION_TIMEOUT {
 		rf.role = CANDIDATE
@@ -115,68 +116,67 @@ func (rf *Raft) leaderElection() {
 	if rf.role == CANDIDATE && time.Since(rf.lastHeartbeat) >= ELECTION_TIMEOUT {
 		Debug(VoteEvent, rf.me, "Leader election start\n")
 		rf.currentTerm++
-		requestTerm := rf.currentTerm
 		rf.votedFor = rf.me
 		rf.persistSate()
 		rf.resetElectionTimer()
-		// set chan size >= len(rf.peers)/2 so that when func that read from chan finished the function that write to chan can return and release the resource without been blocked
-		ch := make(chan *RequestVoteReply, len(rf.peers)/2)
 
+		// set chan size >= len(rf.peers)/2 so that when func that read from chan finished the function that write to chan can return and release the resource without been blocked
+		replyCh := make(chan *RequestVoteReply, len(rf.peers)/2)
+		args := RequestVoteArgs{
+			Term:         rf.currentTerm,
+			CandidateId:  rf.me,
+			LastLogIndex: rf.log.lastIndex(),
+			LastLogTerm:  rf.log.lastEntry().Term,
+		}
 		for peerId := 0; peerId < len(rf.peers); peerId++ {
 			if peerId == rf.me {
 				continue
 			}
-			args := RequestVoteArgs{
-				Term:         rf.currentTerm,
-				CandidateId:  rf.me,
-				LastLogIndex: rf.log.lastIndex(),
-				LastLogTerm:  rf.log.lastEntry().Term,
-			}
-
-			reply := RequestVoteReply{}
 			Debug(VoteEvent, rf.me, "Send request vote to %d with term: %d\n", peerId, rf.currentTerm)
-			go rf.sendRequestVote(peerId, &args, &reply, ch)
+			go rf.sendRequestVote(peerId, &args, replyCh)
 		}
 		rf.mu.Unlock()
 
 		// count votes
-		voteGrantedCount := 1
 		majority := len(rf.peers)/2 + 1
-		for i := 0; voteGrantedCount < majority && i < len(rf.peers)-1; i++ {
-			reply := <-ch
-			if reply != nil {
-				if reply.VoteGranted {
-					voteGrantedCount++
-					Debug(VoteEvent, rf.me, "vote reiceved granted reply, count=%d, requestTerm=%d, rf.currentTerm=%d\n",
-						voteGrantedCount, requestTerm, rf.currentTerm)
-				} else {
-					rf.mu.Lock()
-					if reply.Term > rf.currentTerm {
-						rf.stepDown(reply.Term)
-						Debug(VoteEvent, rf.me, "vote reiceved rejected reply\n")
-						rf.mu.Unlock()
-						break
-					}
-					rf.mu.Unlock()
-				}
-
-			} else {
-				Debug(VoteEvent, rf.me, "vote reiceved nil reply\n")
-			}
-		}
+		votesCount := rf.countVotes(replyCh)
 
 		rf.mu.Lock()
 		// a trick bug in TestFigure8Unreliable2C since I didn't check rf.currentTerm before then
 		// whiout this check it may be elected success with and old term, but now run as a leader with new term
-		if rf.currentTerm == requestTerm && rf.role == CANDIDATE && voteGrantedCount >= majority {
+		if rf.currentTerm == args.Term && rf.role == CANDIDATE && votesCount >= majority {
 			rf.becomeLeader()
 		} else {
-			Debug(VoteEvent, rf.me, "Elected failed with term %d\n", requestTerm)
+			Debug(VoteEvent, rf.me, "Elected failed with term %d\n", args.Term)
 		}
-		rf.mu.Unlock()
-	} else {
-		rf.mu.Unlock()
 	}
+}
+
+func (rf *Raft) countVotes(replyCh <-chan *RequestVoteReply) int {
+	count := 1
+	majority := len(rf.peers)/2 + 1
+	for i := 0; count < majority && i < len(rf.peers)-1; i++ {
+		reply := <-replyCh
+		if reply != nil {
+			if reply.VoteGranted {
+				count++
+				Debug(VoteEvent, rf.me, "vote reiceved granted reply, count=%d, rf.currentTerm=%d\n",
+					count, rf.currentTerm)
+			} else {
+				rf.mu.Lock()
+				if reply.Term > rf.currentTerm {
+					rf.stepDown(reply.Term)
+					Debug(VoteEvent, rf.me, "vote reiceved rejected reply\n")
+					rf.mu.Unlock()
+					break
+				}
+				rf.mu.Unlock()
+			}
+		} else {
+			Debug(VoteEvent, rf.me, "vote reiceved nil reply\n")
+		}
+	}
+	return count
 }
 
 func (rf *Raft) becomeLeader() {

@@ -120,8 +120,8 @@ func (rf *Raft) leaderElection() {
 		rf.persistSate()
 		rf.resetElectionTimer()
 
-		// set chan size >= len(rf.peers)/2 so that when func that read from chan finished the function that write to chan can return and release the resource without been blocked
-		replyCh := make(chan *RequestVoteReply, len(rf.peers)/2)
+		// set chan size len(rf.peers) so that when func that read from chan finished the function that write to chan can return and release the resource without been blocked
+		replyCh := make(chan *RequestVoteReply, len(rf.peers))
 		args := RequestVoteArgs{
 			Term:         rf.currentTerm,
 			CandidateId:  rf.me,

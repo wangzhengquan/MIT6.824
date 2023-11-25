@@ -272,8 +272,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 func (rf *Raft) leaderLogReplication() {
 	Debug(HeartbeatEvent, rf.me, "Leader send heart beats")
-	idle := (rf.commitIndex == rf.log.lastIndex())
-
 	for peerId := 0; peerId < len(rf.peers); peerId++ {
 		if peerId == rf.me {
 			continue
@@ -313,16 +311,7 @@ func (rf *Raft) leaderLogReplication() {
 				peerId, rf.snapshotIndex, rf.matchIndex[peerId], &args)
 		}
 
-		idle = idle && (prevLogIndex == rf.log.lastIndex())
 	}
-
-	// tune heartbeat interval base on if having more logs to send
-	// if idle {
-	// 	HEARTBEAT_TIME_INTERVAL = 10
-	// } else {
-	// 	HEARTBEAT_TIME_INTERVAL = 10
-	// }
-
 }
 
 func (rf *Raft) leaderCountReplicas() int {

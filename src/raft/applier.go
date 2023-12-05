@@ -21,6 +21,8 @@ type ApplyMsg struct {
 	Snapshot      []byte
 	SnapshotTerm  int
 	SnapshotIndex int
+
+	LeaderId int
 }
 
 func (args *ApplyMsg) String() string {
@@ -48,6 +50,7 @@ func (rf *Raft) applier() {
 				Snapshot:      rf.snapshot,
 				SnapshotTerm:  rf.snapshotTerm,
 				SnapshotIndex: rf.snapshotIndex,
+				LeaderId:      rf.leaderId,
 			}
 			rf.mu.Unlock()
 
@@ -70,6 +73,7 @@ func (rf *Raft) applier() {
 				CommandValid: true,
 				Command:      rf.log.entry(commandIndex).Command,
 				CommandIndex: commandIndex,
+				LeaderId:     rf.leaderId,
 			}
 			rf.mu.Unlock()
 			rf.applyCh <- msg

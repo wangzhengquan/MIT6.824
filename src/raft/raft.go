@@ -71,8 +71,8 @@ type Raft struct {
 	nextIndex  []int // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 
-	role RoleT
-	// leaderId int
+	role          RoleT
+	leaderId      int
 	lastHeartbeat time.Time
 	// commitCh      chan int
 	applyCh chan ApplyMsg
@@ -188,12 +188,11 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 	// Your code here (2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	term = rf.currentTerm
 	isLeader = rf.role == LEADER
 	if !isLeader {
 		return
 	}
-
-	term = rf.currentTerm
 	entry := Entry{
 		Command: command,
 		Term:    rf.currentTerm,
@@ -245,7 +244,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.log = makeLog(1, 0)
 	rf.role = FOLLOWER
-	// rf.leaderId = -1
+	rf.leaderId = -1
 	rf.votedFor = -1
 	rf.applyCh = applyCh
 	rf.applyCond = sync.NewCond(&rf.mu)

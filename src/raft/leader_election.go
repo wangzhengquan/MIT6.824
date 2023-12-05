@@ -181,6 +181,7 @@ func (rf *Raft) countVotes(replyCh <-chan *RequestVoteReply) int {
 
 func (rf *Raft) becomeLeader() {
 	Debug(VoteEvent, rf.me, "Elected success with term %d\n", rf.currentTerm)
+	rf.leaderId = rf.me
 	rf.role = LEADER
 	rf.nextIndex = make([]int, len(rf.peers))
 	for i := 0; i < len(rf.peers); i++ {

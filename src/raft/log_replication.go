@@ -28,7 +28,7 @@ type AppendEntriesReply struct {
 	ConflictIndex int
 	Success       bool // true if follower contained entry matching prevLogIndex and prevLogTerm
 
-	LeaderId int // for debug
+	// LeaderId int // for debug
 }
 
 type InstallSnapshotArgs struct {
@@ -54,7 +54,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
-	reply.LeaderId = args.LeaderId // for debug
+	// reply.LeaderId = args.LeaderId // for debug
 
 	if args.Term < rf.currentTerm {
 		Debug(HeartbeatEvent, rf.me, "reject AppendEntries from %d, for args.term %d < current term %d\n",
@@ -68,6 +68,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.resetElectionTimer()
 
+	rf.leaderId = args.LeaderId
 	if args.Term > rf.currentTerm || rf.role == CANDIDATE {
 		rf.stepDown(args.Term)
 	}
@@ -167,6 +168,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.resetElectionTimer()
 
+	rf.leaderId = args.LeaderId
 	if args.Term > rf.currentTerm || rf.role == CANDIDATE {
 		rf.stepDown(args.Term)
 	}

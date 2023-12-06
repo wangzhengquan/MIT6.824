@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"6.5840/labrpc"
@@ -14,7 +15,8 @@ type Clerk struct {
 	mu      sync.Mutex
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	// seqNum   int64
+	seqNum   int64
+	clientId int64
 	leaderId int
 }
 
@@ -29,6 +31,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.clientId = nrand()
 	return ck
 }
 func (ck *Clerk) call(method string, args interface{}) interface{} {
@@ -109,8 +112,9 @@ End:
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	args := GetArgs{
-		Key:    key,
-		SeqNum: nrand(),
+		Key:      key,
+		SeqNum:   atomic.AddInt64(&ck.seqNum, 1),
+		ClientId: ck.clientId,
 	}
 
 	reply := ck.call("KVServer.Get", &args).(GetReply)
@@ -133,10 +137,11 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	args := PutAppendArgs{
-		Key:    key,
-		Value:  value,
-		Op:     op,
-		SeqNum: nrand(),
+		Key:      key,
+		Value:    value,
+		Op:       op,
+		SeqNum:   atomic.AddInt64(&ck.seqNum, 1),
+		ClientId: ck.clientId,
 	}
 
 	reply := ck.call("KVServer.PutAppend", &args).(PutAppendReply)

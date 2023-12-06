@@ -19,10 +19,65 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Type   string
-	Key    string
-	Value  string
-	SeqNum int64
+	Type     string
+	Key      string
+	Value    string
+	SeqNum   int64
+	ClientId int64
+}
+
+type ClientStatus struct {
+	mu         sync.Mutex
+	pending    map[int64]*sync.Cond
+	lastSeqNum int64
+}
+
+func (cs *ClientStatus) init() {
+	cs.pending = make(map[int64]*sync.Cond)
+}
+
+func (cs *ClientStatus) done(seqNum int64) bool {
+	return cs.lastSeqNum >= seqNum
+}
+
+func (cs *ClientStatus) setPendingCond(seqNum int64) *sync.Cond {
+	cond, ok := cs.pending[seqNum]
+	if !ok {
+		cond = sync.NewCond(&cs.mu)
+		cs.pending[seqNum] = cond
+	}
+	return cond
+}
+
+type Store struct {
+	mu   sync.Mutex
+	data map[string]string
+}
+
+func (s *Store) init() {
+	s.data = make(map[string]string)
+}
+func (s *Store) get(key string) (value string, exist bool) {
+	s.mu.Lock()
+	s.mu.Unlock()
+	value, exist = s.data[key]
+	return
+}
+
+func (s *Store) put(key string, value string) {
+	s.mu.Lock()
+	s.mu.Unlock()
+	s.data[key] = value
+}
+
+func (s *Store) append(key string, value string) {
+	s.mu.Lock()
+	s.mu.Unlock()
+	if val, exist := s.data[key]; exist {
+		s.data[key] = val + value
+	} else {
+		s.data[key] = value
+	}
 }
 
 type KVServer struct {
@@ -35,42 +90,45 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	store map[string]string
+	store Store
 
-	pendingMu sync.Mutex
-	pending   map[int64]*sync.Cond
-	done      map[int64]bool
+	clientsStatus map[int64]*ClientStatus
+}
+
+func (kv *KVServer) getClientStatus(clientId int64) *ClientStatus {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	status, ok := kv.clientsStatus[clientId]
+	if !ok {
+		status = new(ClientStatus)
+		status.pending = make(map[int64]*sync.Cond)
+		kv.clientsStatus[clientId] = status
+	}
+	return status
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	kv.mu.Lock()
+	clientStatus := kv.getClientStatus(args.ClientId)
+	clientStatus.mu.Lock()
+	defer clientStatus.mu.Unlock()
 	// DPrintf("Get  args= %+v\n", args)
-	if kv.done[args.SeqNum] {
+	if clientStatus.done(args.SeqNum) {
 		DPrintf("S%d Get done args= %+v\n", kv.me, args)
 		reply.Err = OK
-		reply.Value = kv.store[args.Key]
-		kv.mu.Unlock()
+		reply.Value, _ = kv.store.get(args.Key)
 		return
 	}
 
-	op := Op{Type: GET, Key: args.Key, SeqNum: args.SeqNum}
-	kv.mu.Unlock()
+	op := Op{Type: GET, Key: args.Key, SeqNum: args.SeqNum, ClientId: args.ClientId}
 	if _, _, ok := kv.rf.Start(op); ok {
 		DPrintf("S%d Get start args= %+v\n", kv.me, args)
-		kv.mu.Lock()
-		cond, ok := kv.pending[args.SeqNum]
-		if !ok {
-			cond = sync.NewCond(&kv.mu)
-			kv.pending[args.SeqNum] = cond
-		}
-
-		for !kv.done[args.SeqNum] {
+		cond := clientStatus.setPendingCond(args.SeqNum)
+		for !clientStatus.done(args.SeqNum) {
 			cond.Wait()
 		}
 		reply.Err = OK
-		reply.Value = kv.store[args.Key]
-		kv.mu.Unlock()
+		reply.Value, _ = kv.store.get(args.Key)
 
 	} else {
 		DPrintf("S%d Get ErrWrongLeader args= %+v\n", kv.me, args)
@@ -80,30 +138,21 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	kv.mu.Lock()
-	// DPrintf("PutAppend  args= %+v\n", args)
-	if kv.done[args.SeqNum] {
+	clientStatus := kv.getClientStatus(args.ClientId)
+	clientStatus.mu.Lock()
+	defer clientStatus.mu.Unlock()
+	if clientStatus.done(args.SeqNum) {
 		DPrintf("S%d PutAppend done args= %+v\n", kv.me, args)
-		kv.mu.Unlock()
 		reply.Err = OK
 		return
 	}
-
-	op := Op{Type: args.Op, Key: args.Key, Value: args.Value, SeqNum: args.SeqNum}
-
-	kv.mu.Unlock()
+	op := Op{Type: args.Op, Key: args.Key, Value: args.Value, SeqNum: args.SeqNum, ClientId: args.ClientId}
 	if _, _, ok := kv.rf.Start(op); ok {
 		DPrintf("S%d PutAppend start args= %+v\n", kv.me, args)
-		kv.mu.Lock()
-		cond, ok := kv.pending[args.SeqNum]
-		if !ok {
-			cond = sync.NewCond(&kv.mu)
-			kv.pending[args.SeqNum] = cond
-		}
-		for !kv.done[args.SeqNum] {
+		cond := clientStatus.setPendingCond(args.SeqNum)
+		for !clientStatus.done(args.SeqNum) {
 			cond.Wait()
 		}
-		kv.mu.Unlock()
 		reply.Err = OK
 	} else {
 		DPrintf("S%d PutAppend ErrWrongLeader args= %+v\n", kv.me, args)
@@ -120,25 +169,25 @@ func (kv *KVServer) applier() {
 		} else if m.CommandValid {
 			var op Op = m.Command.(Op)
 			DPrintf("S%d apply op= %+v\n", kv.me, op)
-			kv.mu.Lock()
-			if !kv.done[op.SeqNum] {
+			clientStatus := kv.getClientStatus(op.ClientId)
+
+			if !clientStatus.done(op.SeqNum) {
 				switch op.Type {
 				case PUT:
-					kv.store[op.Key] = op.Value
+					kv.store.put(op.Key, op.Value)
 				case APPEND:
-					if val, exist := kv.store[op.Key]; exist {
-						kv.store[op.Key] = val + op.Value
-					} else {
-						kv.store[op.Key] = op.Value
-					}
+					kv.store.append(op.Key, op.Value)
 				}
-
-				kv.done[op.SeqNum] = true
 			}
-			kv.mu.Unlock()
-			if cond, ok := kv.pending[op.SeqNum]; ok {
-				cond.Broadcast()
-				delete(kv.pending, op.SeqNum)
+
+			if op.SeqNum > clientStatus.lastSeqNum {
+				clientStatus.mu.Lock()
+				clientStatus.lastSeqNum = op.SeqNum
+				if cond, ok := clientStatus.pending[op.SeqNum]; ok {
+					cond.Broadcast()
+					delete(clientStatus.pending, op.SeqNum)
+				}
+				clientStatus.mu.Unlock()
 			}
 
 			// if (m.CommandIndex+1)%kv.maxraftstate == 0 {
@@ -202,9 +251,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// You may need initialization code here.
-	kv.store = make(map[string]string)
-	kv.pending = make(map[int64]*sync.Cond)
-	kv.done = make(map[int64]bool)
+	kv.store = Store{}
+	kv.store.init()
+	kv.clientsStatus = make(map[int64]*ClientStatus)
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 

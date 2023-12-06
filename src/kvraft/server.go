@@ -1,6 +1,8 @@
 package kvraft
 
 import (
+	"bytes"
+	"log"
 	"sync"
 	"sync/atomic"
 
@@ -57,22 +59,39 @@ type Store struct {
 func (s *Store) init() {
 	s.data = make(map[string]string)
 }
+
+func (s *Store) setData(data map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = data
+}
+
+func (s *Store) cloneData() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	data := make(map[string]string)
+	for key, val := range s.data {
+		data[key] = val
+	}
+	return data
+}
+
 func (s *Store) get(key string) (value string, exist bool) {
 	s.mu.RLock()
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
 	value, exist = s.data[key]
 	return
 }
 
 func (s *Store) put(key string, value string) {
 	s.mu.Lock()
-	s.mu.Unlock()
+	defer s.mu.Unlock()
 	s.data[key] = value
 }
 
 func (s *Store) append(key string, value string) {
 	s.mu.Lock()
-	s.mu.Unlock()
+	defer s.mu.Unlock()
 	if val, exist := s.data[key]; exist {
 		s.data[key] = val + value
 	} else {
@@ -90,9 +109,19 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	store Store
-
+	persister     *raft.Persister
+	store         Store
 	clientsStatus map[int64]*ClientStatus
+}
+
+func (kv *KVServer) clientsSeqNum() map[int64]int64 {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	clientSeqNumMap := make(map[int64]int64)
+	for seqNum, clientStatus := range kv.clientsStatus {
+		clientSeqNumMap[seqNum] = clientStatus.lastSeqNum
+	}
+	return clientSeqNumMap
 }
 
 func (kv *KVServer) getClientStatus(clientId int64) *ClientStatus {
@@ -162,50 +191,95 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 func (kv *KVServer) applier() {
 	for m := range kv.applyCh {
-		// kv.mu.Lock()
 		// log.Printf("S%d applierSnap -> applyCh msg= %v\n", i, &m)
 		if m.SnapshotValid {
-			// err_msg = cfg.ingestSnap(i, m.Snapshot, m.SnapshotIndex)
+			kv.applySnap(m.Snapshot, m.SnapshotIndex)
 		} else if m.CommandValid {
 			var op Op = m.Command.(Op)
-			DPrintf("S%d apply op= %+v\n", kv.me, op)
-			clientStatus := kv.getClientStatus(op.ClientId)
+			kv.applyOp(op)
 
-			if !clientStatus.done(op.SeqNum) {
-				switch op.Type {
-				case PUT:
-					kv.store.put(op.Key, op.Value)
-				case APPEND:
-					kv.store.append(op.Key, op.Value)
-				}
-
-				clientStatus.mu.Lock()
-				clientStatus.lastSeqNum = op.SeqNum
-				if cond, ok := clientStatus.pending[op.SeqNum]; ok {
-					cond.Broadcast()
-					delete(clientStatus.pending, op.SeqNum)
-				}
-				clientStatus.mu.Unlock()
+			if kv.maxraftstate > 0 && kv.persister.RaftStateSize() >= kv.maxraftstate {
+				kv.snapshot(m.CommandIndex)
 			}
-
-			// if (m.CommandIndex+1)%kv.maxraftstate == 0 {
-			// 	kv.snapshot()
-			// }
 		}
-		// kv.mu.Unlock()
 	}
 }
 
-func (kv *KVServer) snapshot() {
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(m.CommandIndex)
-	// var xlog []interface{}
-	// for j := 0; j <= m.CommandIndex; j++ {
-	// 	xlog = append(xlog, cfg.logs[i][j])
-	// }
-	// e.Encode(xlog)
-	// kv.rf.Snapshot(m.CommandIndex, w.Bytes())
+func (kv *KVServer) applyOp(op Op) {
+	DPrintf("S%d apply op= %+v\n", kv.me, op)
+	clientStatus := kv.getClientStatus(op.ClientId)
+
+	if !clientStatus.done(op.SeqNum) {
+		switch op.Type {
+		case PUT:
+			kv.store.put(op.Key, op.Value)
+		case APPEND:
+			kv.store.append(op.Key, op.Value)
+		}
+
+		clientStatus.mu.Lock()
+		clientStatus.lastSeqNum = op.SeqNum
+		if cond, ok := clientStatus.pending[op.SeqNum]; ok {
+			cond.Broadcast()
+			delete(clientStatus.pending, op.SeqNum)
+		}
+		clientStatus.mu.Unlock()
+	}
+}
+
+func (kv *KVServer) snapshot(logIndex int) {
+	DPrintf("S%d snapshot logIndex= %v\n", kv.me, logIndex)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(logIndex)
+	e.Encode(kv.store.cloneData())
+	e.Encode(kv.clientsSeqNum())
+	kv.rf.Snapshot(logIndex, w.Bytes())
+	// go func() {
+	// 	kv.rf.Snapshot(logIndex, w.Bytes())
+	// }()
+
+}
+
+func (kv *KVServer) applySnap(snapshot []byte, index int) {
+	if snapshot == nil {
+		log.Fatalf("nil snapshot")
+		return
+	}
+	DPrintf("S%d ingestSnap\n", kv.me)
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+	var lastIncludedIndex int
+	var data map[string]string
+	var clientSeqNumMap map[int64]int64
+	if d.Decode(&lastIncludedIndex) != nil {
+		log.Fatalf("snapshot decode lastIncludedIndex error")
+		return
+	}
+	if d.Decode(&data) != nil {
+		log.Fatalf("snapshot decode data error")
+		return
+	}
+	if d.Decode(&clientSeqNumMap) != nil {
+		log.Fatalf("snapshot decode clientSeqNumMap error")
+		return
+	}
+	if index != -1 && index != lastIncludedIndex {
+		log.Fatalf("snapshot doesn't match m.SnapshotIndex")
+		return
+	}
+	kv.store.setData(data)
+	for clientId, seqNum := range clientSeqNumMap {
+		clientStatus := kv.getClientStatus(clientId)
+		clientStatus.mu.Lock()
+		clientStatus.lastSeqNum = seqNum
+		if cond, ok := clientStatus.pending[seqNum]; ok {
+			cond.Broadcast()
+			delete(clientStatus.pending, seqNum)
+		}
+		clientStatus.mu.Unlock()
+	}
+
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -254,7 +328,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.clientsStatus = make(map[int64]*ClientStatus)
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
+	kv.persister = persister
 	// You may need initialization code here.
 	go kv.applier()
 	return kv

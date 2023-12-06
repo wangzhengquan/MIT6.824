@@ -67,7 +67,6 @@ type config struct {
 var ncpu_once sync.Once
 
 func make_config(t *testing.T, n int, unreliable bool, snapshot bool) *config {
-	DebugInit()
 	// Debug(TestEvent, 1, "test")
 	ncpu_once.Do(func() {
 		if runtime.NumCPU() < 2 {

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestRand(t *testing.T) {
+func Disable_TestRand(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		fmt.Printf("%v ", nrand())
 	}

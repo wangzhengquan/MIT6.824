@@ -199,9 +199,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	if ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply); ok {
-		Debug(SnapEvent, rf.me, "sendInstallSnapshot: reply from %d, reply.Term=%d, rf.currentTerm=%d", server, reply.Term, rf.currentTerm)
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+		Debug(SnapEvent, rf.me, "sendInstallSnapshot: reply from %d, reply.Term=%d, rf.currentTerm=%d", server, reply.Term, rf.currentTerm)
 		if args.Term != rf.currentTerm {
 			return
 		}

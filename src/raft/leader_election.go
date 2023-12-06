@@ -160,8 +160,8 @@ func (rf *Raft) countVotes(replyCh <-chan *RequestVoteReply) int {
 		if reply != nil {
 			if reply.VoteGranted {
 				count++
-				Debug(VoteEvent, rf.me, "vote reiceved granted reply, count=%d, rf.currentTerm=%d\n",
-					count, rf.currentTerm)
+				// Debug(VoteEvent, rf.me, "vote reiceved granted reply, count=%d, rf.currentTerm=%d\n",
+				// 	count, rf.currentTerm)
 			} else {
 				rf.mu.Lock()
 				if reply.Term > rf.currentTerm {

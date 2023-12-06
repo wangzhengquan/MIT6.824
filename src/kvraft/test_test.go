@@ -1,16 +1,19 @@
 package kvraft
 
-import "6.5840/porcupine"
-import "6.5840/models"
-import "testing"
-import "strconv"
-import "time"
-import "math/rand"
-import "strings"
-import "sync"
-import "sync/atomic"
-import "fmt"
-import "io/ioutil"
+import (
+	"fmt"
+	"io/ioutil"
+	"math/rand"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"6.5840/models"
+	"6.5840/porcupine"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -21,6 +24,10 @@ const linearizabilityCheckTimeout = 1 * time.Second
 type OpLog struct {
 	operations []porcupine.Operation
 	sync.Mutex
+}
+
+func init() {
+	DebugInit()
 }
 
 func (log *OpLog) Append(op porcupine.Operation) {

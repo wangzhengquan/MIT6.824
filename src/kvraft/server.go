@@ -112,6 +112,9 @@ type KVServer struct {
 	persister     *raft.Persister
 	store         Store
 	clientsStatus map[int64]*ClientStatus
+
+	snapshotInProgress   bool
+	snapshotInProgressMu sync.Mutex
 }
 
 func (kv *KVServer) clientsSeqNum() map[int64]int64 {
@@ -228,16 +231,26 @@ func (kv *KVServer) applyOp(op Op) {
 }
 
 func (kv *KVServer) snapshot(logIndex int) {
+	kv.snapshotInProgressMu.Lock()
+	if kv.snapshotInProgress {
+		kv.snapshotInProgressMu.Unlock()
+		return
+	}
+	kv.snapshotInProgress = true
+	kv.snapshotInProgressMu.Unlock()
 	DPrintf("S%d snapshot logIndex= %v\n", kv.me, logIndex)
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(logIndex)
-	e.Encode(kv.store.cloneData())
+	e.Encode(kv.store.data)
 	e.Encode(kv.clientsSeqNum())
 	kv.rf.Snapshot(logIndex, w.Bytes())
-	// go func() {
-	// 	kv.rf.Snapshot(logIndex, w.Bytes())
-	// }()
+	go func() {
+		kv.rf.Snapshot(logIndex, w.Bytes())
+		kv.snapshotInProgressMu.Lock()
+		kv.snapshotInProgress = false
+		kv.snapshotInProgressMu.Unlock()
+	}()
 
 }
 

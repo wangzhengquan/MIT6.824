@@ -74,67 +74,56 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// “PrevLogIndex log matched” check
+	if args.PrevLogIndex > rf.log.lastIndex() {
+		Debug(HeartbeatEvent, rf.me, "refuse AppendEntries request from %d for args.PrevLogIndex %d > rf.lastLogIndex %d \n",
+			args.LeaderId, args.PrevLogIndex, rf.log.lastIndex())
+		reply.ConflictTerm = rf.log.lastEntry().Term
+		reply.ConflictIndex = rf.log.lastIndex()
+		reply.Success = false
+	} else if args.PrevLogIndex < rf.snapshotIndex {
+		i := rf.snapshotIndex - args.PrevLogIndex - 1
 
-	if args.PrevLogIndex == 0 {
+		// log.Printf("---args.PrevLogIndex %d < rf.snapshotIndex %d, i=%d, len(args.Entries)=%d\n", args.PrevLogIndex, rf.snapshotIndex, i, len(args.Entries))
+		if len(args.Entries) > i {
+			Assert(args.Entries[i].Term == rf.snapshotTerm, "args.Entries[i].Term=%d ,rf.snapshotTerm=%d", args.Entries[i].Term, rf.snapshotTerm)
+			rf.log.place(rf.snapshotIndex, args.Entries[i:]...)
+			rf.persistSate()
+			Debug(HeartbeatEvent, rf.me, "approve append entries, i=%d, len(args.Entries)=%d\n", i, len(args.Entries))
+			rf.followerCommit(args.LeaderCommitIndex)
+		}
+		// j := 1
+		// i := rf.snapshotIndex - args.PrevLogIndex
+		// if len(args.Entries) > i {
+		// 	// it should be "args.Entries[i-1] == rf.log[0]"
+		// 	Assert(args.Entries[i-1].Term == rf.snapshotTerm, "args.Entries[i-1].Term=%d ,rf.snapshotTerm=%d", args.Entries[i-1].Term, rf.snapshotTerm)
+		// 	for ; i < len(args.Entries) && j < len(rf.log.entries); i, j = i+1, j+1 {
+		// 		rf.log.entries[j] = args.Entries[i]
+		// 	}
+		// 	rf.log.entries = append(rf.log.entries, args.Entries[i:]...)
+		// 	rf.persistSate()
+		// }
+
+		reply.Success = true
+
+	} else if rf.log.entry(args.PrevLogIndex).Term != args.PrevLogTerm {
+		reply.ConflictTerm = rf.log.entry(args.PrevLogIndex).Term
+		reply.ConflictIndex = args.PrevLogIndex
+		Debug(HeartbeatEvent, rf.me, "refuse AppendEntries request from %d for rf.log[PrevLogIndex %d].Term %d != args.PrevLogTerm %d\n",
+			args.LeaderId, args.PrevLogIndex, reply.ConflictTerm, args.PrevLogTerm)
+		rf.log.cutOffTail(args.PrevLogIndex)
+		rf.persistSate()
+		reply.Success = false
+	} else {
+		// follower's log matches the leader’s log up to and including the args.prevLogIndex
 		oldLogLen := rf.log.length()
 		rf.log.place(args.PrevLogIndex+1, args.Entries...)
+
 		Debug(HeartbeatEvent, rf.me, "approve AppendEntries request from %d, old log=%d, new log=%d\n",
 			args.LeaderId, oldLogLen, rf.log.length())
 		rf.persistSate()
+		// follower commit
 		rf.followerCommit(args.LeaderCommitIndex)
 		reply.Success = true
-	} else {
-		if args.PrevLogIndex > rf.log.lastIndex() {
-			Debug(HeartbeatEvent, rf.me, "refuse AppendEntries request from %d for args.PrevLogIndex %d > rf.lastLogIndex %d \n",
-				args.LeaderId, args.PrevLogIndex, rf.log.lastIndex())
-			reply.ConflictTerm = rf.log.lastEntry().Term
-			reply.ConflictIndex = rf.log.lastIndex()
-			reply.Success = false
-		} else if args.PrevLogIndex < rf.snapshotIndex {
-			i := rf.snapshotIndex - args.PrevLogIndex - 1
-
-			// log.Printf("---args.PrevLogIndex %d < rf.snapshotIndex %d, i=%d, len(args.Entries)=%d\n", args.PrevLogIndex, rf.snapshotIndex, i, len(args.Entries))
-			if len(args.Entries) > i {
-				Assert(args.Entries[i].Term == rf.snapshotTerm, "args.Entries[i].Term=%d ,rf.snapshotTerm=%d", args.Entries[i].Term, rf.snapshotTerm)
-				rf.log.place(rf.snapshotIndex, args.Entries[i:]...)
-				rf.persistSate()
-				Debug(HeartbeatEvent, rf.me, "approve append entries, i=%d, len(args.Entries)=%d\n", i, len(args.Entries))
-				rf.followerCommit(args.LeaderCommitIndex)
-			}
-			// j := 1
-			// i := rf.snapshotIndex - args.PrevLogIndex
-			// if len(args.Entries) > i {
-			// 	// it should be "args.Entries[i-1] == rf.log[0]"
-			// 	Assert(args.Entries[i-1].Term == rf.snapshotTerm, "args.Entries[i-1].Term=%d ,rf.snapshotTerm=%d", args.Entries[i-1].Term, rf.snapshotTerm)
-			// 	for ; i < len(args.Entries) && j < len(rf.log.entries); i, j = i+1, j+1 {
-			// 		rf.log.entries[j] = args.Entries[i]
-			// 	}
-			// 	rf.log.entries = append(rf.log.entries, args.Entries[i:]...)
-			// 	rf.persistSate()
-			// }
-
-			reply.Success = true
-
-		} else if rf.log.entry(args.PrevLogIndex).Term != args.PrevLogTerm {
-			reply.ConflictTerm = rf.log.entry(args.PrevLogIndex).Term
-			reply.ConflictIndex = args.PrevLogIndex
-			Debug(HeartbeatEvent, rf.me, "refuse AppendEntries request from %d for rf.log[PrevLogIndex %d].Term %d != args.PrevLogTerm %d\n",
-				args.LeaderId, args.PrevLogIndex, reply.ConflictTerm, args.PrevLogTerm)
-			rf.log.cutOffTail(args.PrevLogIndex)
-			rf.persistSate()
-			reply.Success = false
-		} else {
-			// follower's log matches the leader’s log up to and including the args.prevLogIndex
-			oldLogLen := rf.log.length()
-			rf.log.place(args.PrevLogIndex+1, args.Entries...)
-
-			Debug(HeartbeatEvent, rf.me, "approve AppendEntries request from %d, old log=%d, new log=%d\n",
-				args.LeaderId, oldLogLen, rf.log.length())
-			rf.persistSate()
-			// follower commit
-			rf.followerCommit(args.LeaderCommitIndex)
-			reply.Success = true
-		}
 	}
 }
 

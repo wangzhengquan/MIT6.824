@@ -21,6 +21,7 @@ func (l *Log) append(a ...Entry) {
 func (l *Log) place(index int, a ...Entry) {
 	j := 0
 	// overlap part
+	Assert(index-l.index0 >= 0, "place index=%d, l.index0=%d\n", index, l.index0)
 	for i := index - l.index0; i < len(l.entries) && j < len(a); i, j = i+1, j+1 {
 		l.entries[i] = a[j]
 	}
@@ -33,6 +34,7 @@ func (l *Log) start() int {
 }
 
 func (l *Log) entry(index int) *Entry {
+	Assert(index-l.index0 >= 0, "entry index=%d, l.index0=%d\n", index, l.index0)
 	return &l.entries[index-l.index0]
 }
 
@@ -58,5 +60,10 @@ func (l *Log) cutOffHead(index int) {
 }
 
 func (l *Log) cutOffTail(index int) {
-	l.entries = l.entries[:index-l.index0]
+	if index == l.index0 {
+		l.entries = l.entries[:1]
+	} else {
+		l.entries = l.entries[:index-l.index0]
+	}
+
 }

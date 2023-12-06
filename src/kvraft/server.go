@@ -50,7 +50,7 @@ func (cs *ClientStatus) setPendingCond(seqNum int64) *sync.Cond {
 }
 
 type Store struct {
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	data map[string]string
 }
 
@@ -58,8 +58,8 @@ func (s *Store) init() {
 	s.data = make(map[string]string)
 }
 func (s *Store) get(key string) (value string, exist bool) {
-	s.mu.Lock()
-	s.mu.Unlock()
+	s.mu.RLock()
+	s.mu.RUnlock()
 	value, exist = s.data[key]
 	return
 }
@@ -178,9 +178,7 @@ func (kv *KVServer) applier() {
 				case APPEND:
 					kv.store.append(op.Key, op.Value)
 				}
-			}
 
-			if op.SeqNum > clientStatus.lastSeqNum {
 				clientStatus.mu.Lock()
 				clientStatus.lastSeqNum = op.SeqNum
 				if cond, ok := clientStatus.pending[op.SeqNum]; ok {

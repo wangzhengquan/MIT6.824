@@ -40,7 +40,7 @@ func (ck *Clerk) call(method string, args interface{}) interface{} {
 		reply    interface{}
 	}
 
-	const timeout = 1000 * time.Millisecond
+	const timeout = 100 * time.Millisecond
 	t := time.NewTimer(timeout)
 	defer t.Stop()
 

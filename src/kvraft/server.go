@@ -19,8 +19,7 @@ const (
 
 type Op struct {
 	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	// Field names must start with capital letters, otherwise RPC will break.
 	Type     string
 	Key      string
 	Value    string
@@ -49,6 +48,16 @@ func (cs *ClientStatus) setPendingCond(seqNum int64) *sync.Cond {
 		cs.pending[seqNum] = cond
 	}
 	return cond
+}
+
+func (cs *ClientStatus) updateSeqNum(seqNum int64) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.lastSeqNum = seqNum
+	if cond, ok := cs.pending[seqNum]; ok {
+		cond.Broadcast()
+		delete(cs.pending, seqNum)
+	}
 }
 
 type Store struct {
@@ -112,9 +121,6 @@ type KVServer struct {
 	persister     *raft.Persister
 	store         Store
 	clientsStatus map[int64]*ClientStatus
-
-	snapshotInProgress   bool
-	snapshotInProgressMu sync.Mutex
 }
 
 func (kv *KVServer) clientsSeqNum() map[int64]int64 {
@@ -219,25 +225,11 @@ func (kv *KVServer) applyOp(op Op) {
 		case APPEND:
 			kv.store.append(op.Key, op.Value)
 		}
-
-		clientStatus.mu.Lock()
-		clientStatus.lastSeqNum = op.SeqNum
-		if cond, ok := clientStatus.pending[op.SeqNum]; ok {
-			cond.Broadcast()
-			delete(clientStatus.pending, op.SeqNum)
-		}
-		clientStatus.mu.Unlock()
+		clientStatus.updateSeqNum(op.SeqNum)
 	}
 }
 
 func (kv *KVServer) snapshot(logIndex int) {
-	kv.snapshotInProgressMu.Lock()
-	if kv.snapshotInProgress {
-		kv.snapshotInProgressMu.Unlock()
-		return
-	}
-	kv.snapshotInProgress = true
-	kv.snapshotInProgressMu.Unlock()
 	DPrintf("S%d snapshot logIndex= %v\n", kv.me, logIndex)
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
@@ -247,9 +239,6 @@ func (kv *KVServer) snapshot(logIndex int) {
 	kv.rf.Snapshot(logIndex, w.Bytes())
 	go func() {
 		kv.rf.Snapshot(logIndex, w.Bytes())
-		kv.snapshotInProgressMu.Lock()
-		kv.snapshotInProgress = false
-		kv.snapshotInProgressMu.Unlock()
 	}()
 
 }
@@ -284,13 +273,7 @@ func (kv *KVServer) applySnap(snapshot []byte, index int) {
 	kv.store.setData(data)
 	for clientId, seqNum := range clientSeqNumMap {
 		clientStatus := kv.getClientStatus(clientId)
-		clientStatus.mu.Lock()
-		clientStatus.lastSeqNum = seqNum
-		if cond, ok := clientStatus.pending[seqNum]; ok {
-			cond.Broadcast()
-			delete(clientStatus.pending, seqNum)
-		}
-		clientStatus.mu.Unlock()
+		clientStatus.updateSeqNum(seqNum)
 	}
 
 }

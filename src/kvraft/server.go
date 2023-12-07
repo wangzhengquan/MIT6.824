@@ -29,35 +29,23 @@ type Op struct {
 
 type ClientStatus struct {
 	mu         sync.Mutex
-	pending    map[int64]*sync.Cond
+	cond       *sync.Cond
 	lastSeqNum int64
 }
 
 func (cs *ClientStatus) init() {
-	cs.pending = make(map[int64]*sync.Cond)
+	cs.cond = sync.NewCond(&cs.mu)
 }
 
 func (cs *ClientStatus) done(seqNum int64) bool {
 	return cs.lastSeqNum >= seqNum
 }
 
-func (cs *ClientStatus) setPendingCond(seqNum int64) *sync.Cond {
-	cond, ok := cs.pending[seqNum]
-	if !ok {
-		cond = sync.NewCond(&cs.mu)
-		cs.pending[seqNum] = cond
-	}
-	return cond
-}
-
 func (cs *ClientStatus) updateSeqNum(seqNum int64) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.lastSeqNum = seqNum
-	if cond, ok := cs.pending[seqNum]; ok {
-		cond.Broadcast()
-		delete(cs.pending, seqNum)
-	}
+	cs.cond.Broadcast()
 }
 
 type Store struct {
@@ -139,7 +127,7 @@ func (kv *KVServer) getClientStatus(clientId int64) *ClientStatus {
 	status, ok := kv.clientsStatus[clientId]
 	if !ok {
 		status = new(ClientStatus)
-		status.pending = make(map[int64]*sync.Cond)
+		status.init()
 		kv.clientsStatus[clientId] = status
 	}
 	return status
@@ -150,7 +138,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	clientStatus := kv.getClientStatus(args.ClientId)
 	clientStatus.mu.Lock()
 	defer clientStatus.mu.Unlock()
-	// DPrintf("Get  args= %+v\n", args)
 	if clientStatus.done(args.SeqNum) {
 		DPrintf("S%d Get done args= %+v\n", kv.me, args)
 		reply.Err = OK
@@ -161,9 +148,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	op := Op{Type: GET, Key: args.Key, SeqNum: args.SeqNum, ClientId: args.ClientId}
 	if _, _, ok := kv.rf.Start(op); ok {
 		DPrintf("S%d Get start args= %+v\n", kv.me, args)
-		cond := clientStatus.setPendingCond(args.SeqNum)
 		for !clientStatus.done(args.SeqNum) {
-			cond.Wait()
+			clientStatus.cond.Wait()
 		}
 		reply.Err = OK
 		reply.Value, _ = kv.store.get(args.Key)
@@ -187,9 +173,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	op := Op{Type: args.Op, Key: args.Key, Value: args.Value, SeqNum: args.SeqNum, ClientId: args.ClientId}
 	if _, _, ok := kv.rf.Start(op); ok {
 		DPrintf("S%d PutAppend start args= %+v\n", kv.me, args)
-		cond := clientStatus.setPendingCond(args.SeqNum)
 		for !clientStatus.done(args.SeqNum) {
-			cond.Wait()
+			clientStatus.cond.Wait()
 		}
 		reply.Err = OK
 	} else {

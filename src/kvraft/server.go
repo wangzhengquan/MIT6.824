@@ -97,7 +97,7 @@ func (s *Store) append(key string, value string) {
 }
 
 type KVServer struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
@@ -122,9 +122,16 @@ func (kv *KVServer) clientsSeqNum() map[int64]int64 {
 }
 
 func (kv *KVServer) getClientStatus(clientId int64) *ClientStatus {
+	kv.mu.RLock()
+	status, ok := kv.clientsStatus[clientId]
+	kv.mu.RUnlock()
+	if ok {
+		return status
+	}
+
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	status, ok := kv.clientsStatus[clientId]
+	status, ok = kv.clientsStatus[clientId]
 	if !ok {
 		status = new(ClientStatus)
 		status.init()

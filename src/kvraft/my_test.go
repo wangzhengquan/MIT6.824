@@ -12,7 +12,7 @@ func Disable_TestRand(t *testing.T) {
 	fmt.Println()
 }
 
-func TestMain(t *testing.T) {
+func Disable_TestMain(t *testing.T) {
 	cs1 := ClientStatus{lastSeqNum: 11}
 	cs2 := cs1
 	cs2.lastSeqNum = 22

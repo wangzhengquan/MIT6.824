@@ -34,70 +34,6 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.clientId = nrand()
 	return ck
 }
-func (ck *Clerk) call(method string, args interface{}) interface{} {
-	type result struct {
-		serverID int
-		reply    interface{}
-	}
-
-	const timeout = 1000 * time.Millisecond
-	t := time.NewTimer(timeout)
-	defer t.Stop()
-
-	doneCh := make(chan result, len(ck.servers))
-
-	ck.mu.Lock()
-	leaderId := ck.leaderId
-	ck.mu.Unlock()
-	var r result
-
-	for off := 0; ; off++ {
-		id := (leaderId + off) % len(ck.servers)
-		go func() {
-			switch method {
-			case "KVServer.Get":
-				reply := GetReply{}
-				if ck.servers[id].Call(method, args, &reply) {
-					doneCh <- result{id, reply}
-				}
-			case "KVServer.PutAppend":
-				reply := PutAppendReply{}
-				if ck.servers[id].Call(method, args, &reply) {
-					doneCh <- result{id, reply}
-				}
-			default:
-				panic(fmt.Sprintf("I don't know about method %v!\n", method))
-			}
-
-		}()
-
-		select {
-		case r = <-doneCh:
-			switch method {
-			case "KVServer.Get":
-				reply := r.reply.(GetReply)
-				if reply.Err == ErrWrongLeader {
-					continue
-				}
-			case "KVServer.PutAppend":
-				reply := r.reply.(PutAppendReply)
-				if reply.Err == ErrWrongLeader {
-					continue
-				}
-			}
-			goto End
-		case <-t.C:
-			// timeout
-			t.Reset(timeout)
-		}
-	}
-	// r = <-doneCh
-End:
-	ck.mu.Lock()
-	ck.leaderId = r.serverID
-	ck.mu.Unlock()
-	return r.reply
-}
 
 // fetch the current value for a key.
 // returns "" if the key does not exist.
@@ -157,6 +93,73 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 func (ck *Clerk) Put(key string, value string) {
 	ck.PutAppend(key, value, "Put")
 }
+
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
+}
+
+func (ck *Clerk) call(method string, args interface{}) interface{} {
+	type result struct {
+		serverID int
+		reply    interface{}
+	}
+
+	const timeout = 100 * time.Millisecond
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+
+	doneCh := make(chan result, len(ck.servers))
+
+	ck.mu.Lock()
+	leaderId := ck.leaderId
+	ck.mu.Unlock()
+	var r result
+
+	for off := 0; ; off++ {
+		id := (leaderId + off) % len(ck.servers)
+		switch method {
+		case "KVServer.Get":
+			reply := GetReply{}
+			go func() {
+				if ck.servers[id].Call(method, args, &reply) {
+					doneCh <- result{id, reply}
+				}
+			}()
+		case "KVServer.PutAppend":
+			reply := PutAppendReply{}
+			go func() {
+				if ck.servers[id].Call(method, args, &reply) {
+					doneCh <- result{id, reply}
+				}
+			}()
+		default:
+			panic(fmt.Sprintf("I don't know about method %v!\n", method))
+		}
+
+		select {
+		case r = <-doneCh:
+			switch method {
+			case "KVServer.Get":
+				reply := r.reply.(GetReply)
+				if reply.Err == ErrWrongLeader {
+					continue
+				}
+			case "KVServer.PutAppend":
+				reply := r.reply.(PutAppendReply)
+				if reply.Err == ErrWrongLeader {
+					continue
+				}
+			}
+			goto End
+		case <-t.C:
+			// timeout
+			t.Reset(timeout)
+		}
+	}
+	// r = <-doneCh
+End:
+	ck.mu.Lock()
+	ck.leaderId = r.serverID
+	ck.mu.Unlock()
+	return r.reply
 }

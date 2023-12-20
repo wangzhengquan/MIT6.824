@@ -140,52 +140,44 @@ func (kv *KVServer) getClientStatus(clientId int64) *ClientStatus {
 	return status
 }
 
-func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
-	clientStatus := kv.getClientStatus(args.ClientId)
+func (kv *KVServer) operation(op *Op) (isLeader bool) {
+	clientStatus := kv.getClientStatus(op.ClientId)
 	clientStatus.mu.Lock()
 	defer clientStatus.mu.Unlock()
-	if clientStatus.done(args.SeqNum) {
-		DPrintf("S%d Get done args= %+v\n", kv.me, args)
-		reply.Err = OK
-		reply.Value, _ = kv.store.get(args.Key)
-		return
+	if clientStatus.done(op.SeqNum) {
+		DPrintf("S%d op done op= %+v\n", kv.me, op)
+		return true
 	}
 
-	op := Op{Type: GET, Key: args.Key, SeqNum: args.SeqNum, ClientId: args.ClientId}
-	if _, _, ok := kv.rf.Start(op); ok {
-		DPrintf("S%d Get start args= %+v\n", kv.me, args)
-		for !clientStatus.done(args.SeqNum) {
+	if _, _, ok := kv.rf.Start(*op); ok {
+		DPrintf("S%d op start op= %+v\n", kv.me, op)
+		for !clientStatus.done(op.SeqNum) {
 			clientStatus.cond.Wait()
 		}
+		return true
+	} else {
+		DPrintf("S%d Get ErrWrongLeader op= %+v\n", kv.me, op)
+		return false
+	}
+}
+
+func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	op := Op{Type: GET, Key: args.Key, SeqNum: args.SeqNum, ClientId: args.ClientId}
+	isLeader := kv.operation(&op)
+	if isLeader {
 		reply.Err = OK
 		reply.Value, _ = kv.store.get(args.Key)
-
 	} else {
-		DPrintf("S%d Get ErrWrongLeader args= %+v\n", kv.me, args)
 		reply.Err = ErrWrongLeader
 	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
-	clientStatus := kv.getClientStatus(args.ClientId)
-	clientStatus.mu.Lock()
-	defer clientStatus.mu.Unlock()
-	if clientStatus.done(args.SeqNum) {
-		DPrintf("S%d PutAppend done args= %+v\n", kv.me, args)
-		reply.Err = OK
-		return
-	}
 	op := Op{Type: args.Op, Key: args.Key, Value: args.Value, SeqNum: args.SeqNum, ClientId: args.ClientId}
-	if _, _, ok := kv.rf.Start(op); ok {
-		DPrintf("S%d PutAppend start args= %+v\n", kv.me, args)
-		for !clientStatus.done(args.SeqNum) {
-			clientStatus.cond.Wait()
-		}
+	isLeader := kv.operation(&op)
+	if isLeader {
 		reply.Err = OK
 	} else {
-		DPrintf("S%d PutAppend ErrWrongLeader args= %+v\n", kv.me, args)
 		reply.Err = ErrWrongLeader
 	}
 }

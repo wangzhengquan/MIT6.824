@@ -4,14 +4,23 @@ package shardctrler
 // Shardctrler clerk.
 //
 
-import "6.5840/labrpc"
-import "time"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"6.5840/labrpc"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// Your data here.
+	mu       sync.Mutex
+	seqNum   int64
+	clientId int64
+	leaderId int
 }
 
 func nrand() int64 {
@@ -25,77 +34,114 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// Your code here.
+	ck.clientId = nrand()
 	return ck
 }
 
 func (ck *Clerk) Query(num int) Config {
-	args := &QueryArgs{}
-	// Your code here.
-	args.Num = num
-	for {
-		// try each known server.
-		for _, srv := range ck.servers {
-			var reply QueryReply
-			ok := srv.Call("ShardCtrler.Query", args, &reply)
-			if ok && reply.WrongLeader == false {
-				return reply.Config
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
+	args := QueryArgs{
+		Num:      num,
+		SeqNum:   atomic.AddInt64(&ck.seqNum, 1),
+		ClientId: ck.clientId,
 	}
+	reply := ck.call("ShardCtrler.Query", &args).(QueryReply)
+	return reply.Config
+
 }
 
-func (ck *Clerk) Join(servers map[int][]string) {
-	args := &JoinArgs{}
-	// Your code here.
-	args.Servers = servers
-
-	for {
-		// try each known server.
-		for _, srv := range ck.servers {
-			var reply JoinReply
-			ok := srv.Call("ShardCtrler.Join", args, &reply)
-			if ok && reply.WrongLeader == false {
-				return
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
+func (ck *Clerk) Join(groups map[int][]string) {
+	args := JoinArgs{
+		Groups:   groups,
+		SeqNum:   atomic.AddInt64(&ck.seqNum, 1),
+		ClientId: ck.clientId,
 	}
+	ck.call("ShardCtrler.Join", &args)
 }
 
 func (ck *Clerk) Leave(gids []int) {
-	args := &LeaveArgs{}
-	// Your code here.
-	args.GIDs = gids
-
-	for {
-		// try each known server.
-		for _, srv := range ck.servers {
-			var reply LeaveReply
-			ok := srv.Call("ShardCtrler.Leave", args, &reply)
-			if ok && reply.WrongLeader == false {
-				return
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
+	args := LeaveArgs{
+		GIDs:     gids,
+		SeqNum:   atomic.AddInt64(&ck.seqNum, 1),
+		ClientId: ck.clientId,
 	}
+	ck.call("ShardCtrler.Leave", &args)
 }
 
 func (ck *Clerk) Move(shard int, gid int) {
-	args := &MoveArgs{}
+	args := MoveArgs{
+		Shard:    shard,
+		GID:      gid,
+		SeqNum:   atomic.AddInt64(&ck.seqNum, 1),
+		ClientId: ck.clientId,
+	}
 	// Your code here.
 	args.Shard = shard
 	args.GID = gid
+	ck.call("ShardCtrler.Move", &args)
 
-	for {
-		// try each known server.
-		for _, srv := range ck.servers {
-			var reply MoveReply
-			ok := srv.Call("ShardCtrler.Move", args, &reply)
-			if ok && reply.WrongLeader == false {
-				return
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
+}
+
+func (ck *Clerk) call(method string, args interface{}) interface{} {
+	type result struct {
+		serverID int
+		reply    interface{}
 	}
+
+	const timeout = 100 * time.Millisecond
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+
+	doneCh := make(chan result, len(ck.servers))
+
+	ck.mu.Lock()
+	leaderId := ck.leaderId
+	ck.mu.Unlock()
+	var r result
+
+	for off := 0; ; off++ {
+		id := (leaderId + off) % len(ck.servers)
+
+		switch method {
+		case "ShardCtrler.Query":
+			reply := QueryReply{}
+			go func() {
+				if ck.servers[id].Call(method, args, &reply) {
+					doneCh <- result{id, reply}
+				}
+			}()
+		default:
+			reply := Reply{}
+			go func() {
+				if ck.servers[id].Call(method, args, &reply) {
+					doneCh <- result{id, reply}
+				}
+			}()
+		}
+
+		select {
+		case r = <-doneCh:
+			switch method {
+			case "ShardCtrler.Query":
+				reply := r.reply.(QueryReply)
+				if reply.Err == WrongLeader {
+					continue
+				}
+			default:
+				reply := r.reply.(Reply)
+				if reply.Err == WrongLeader {
+					continue
+				}
+			}
+			goto End
+		case <-t.C:
+			// timeout
+			t.Reset(timeout)
+		}
+	}
+
+End:
+	ck.mu.Lock()
+	ck.leaderId = r.serverID
+	ck.mu.Unlock()
+	return r.reply
 }

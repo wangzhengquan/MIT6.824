@@ -12,7 +12,7 @@ import (
 func check(t *testing.T, groups []int, ck *Clerk) {
 	c := ck.Query(-1)
 	if len(c.Groups) != len(groups) {
-		t.Fatalf("wanted %v groups, got %v", len(groups), len(c.Groups))
+		panic(fmt.Sprintf("wanted %v groups, got %v", len(groups), len(c.Groups)))
 	}
 
 	// are the groups as expected?
@@ -28,7 +28,7 @@ func check(t *testing.T, groups []int, ck *Clerk) {
 		for s, g := range c.Shards {
 			_, ok := c.Groups[g]
 			if ok == false {
-				t.Fatalf("shard %v -> invalid group %v", s, g)
+				panic(fmt.Sprintf("shard %v -> invalid group %v", s, g))
 			}
 		}
 	}
@@ -40,16 +40,19 @@ func check(t *testing.T, groups []int, ck *Clerk) {
 	}
 	min := 257
 	max := 0
+	var minGid, maxGid int
 	for g, _ := range c.Groups {
 		if counts[g] > max {
 			max = counts[g]
+			maxGid = g
 		}
 		if counts[g] < min {
 			min = counts[g]
+			minGid = g
 		}
 	}
 	if max > min+1 {
-		t.Fatalf("max %v too much larger than min %v", max, min)
+		panic(fmt.Sprintf("max %v:%v too much larger than min %v:%v, config= %+v", maxGid, max, minGid, min, c))
 	}
 }
 
@@ -58,7 +61,7 @@ func check_same_config(t *testing.T, c1 Config, c2 Config) {
 		t.Fatalf("Num wrong")
 	}
 	if c1.Shards != c2.Shards {
-		t.Fatalf("Shards wrong")
+		panic(fmt.Sprintf("Shards wrong, \nconfig1=%+v \nconfig2=%+v", c1, c2))
 	}
 	if len(c1.Groups) != len(c2.Groups) {
 		t.Fatalf("number of Groups is wrong")
@@ -112,10 +115,12 @@ func TestBasic(t *testing.T) {
 		t.Fatalf("wrong servers for gid %v: %v\n", gid2, sa2)
 	}
 
+	DPrintf(TEST, "leave %v ", gid1)
 	ck.Leave([]int{gid1})
 	check(t, []int{gid2}, ck)
 	cfa[4] = ck.Query(-1)
 
+	DPrintf(TEST, "leave %v ", gid2)
 	ck.Leave([]int{gid2})
 	cfa[5] = ck.Query(-1)
 

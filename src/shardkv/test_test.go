@@ -1,22 +1,30 @@
 package shardkv
 
-import "6.5840/porcupine"
-import "6.5840/models"
-import "testing"
-import "strconv"
-import "time"
-import "fmt"
-import "sync/atomic"
-import "sync"
-import "math/rand"
-import "io/ioutil"
+import (
+	"fmt"
+	"io/ioutil"
+	"log"
+	"math/rand"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"6.5840/models"
+	"6.5840/porcupine"
+)
 
 const linearizabilityCheckTimeout = 1 * time.Second
+
+func init() {
+	debugInit()
+}
 
 func check(t *testing.T, ck *Clerk, key string, value string) {
 	v := ck.Get(key)
 	if v != value {
-		t.Fatalf("Get(%v): expected:\n%v\nreceived:\n%v", key, value, v)
+		panic(fmt.Sprintf("Get(%v): expected:\n%v\nreceived:\n%v", key, value, v))
 	}
 }
 
@@ -31,15 +39,16 @@ func TestStaticShards(t *testing.T) {
 
 	cfg.join(0)
 	cfg.join(1)
-
 	n := 10
 	ka := make([]string, n)
 	va := make([]string, n)
 	for i := 0; i < n; i++ {
+		// log.Printf("=====1-%d", i)
 		ka[i] = strconv.Itoa(i) // ensure multiple shards
 		va[i] = randstring(20)
 		ck.Put(ka[i], va[i])
 	}
+
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
 	}
@@ -48,6 +57,7 @@ func TestStaticShards(t *testing.T) {
 	// shutting down one shard and checking that some
 	// Get()s don't succeed.
 	cfg.ShutdownGroup(1)
+	// log.Printf("====ShutdownGroup\n\n")
 	cfg.checklogs() // forbid snapshots
 
 	ch := make(chan string)
@@ -67,6 +77,7 @@ func TestStaticShards(t *testing.T) {
 	ndone := 0
 	done := false
 	for done == false {
+		// log.Printf("=====2-%d", ndone)
 		select {
 		case err := <-ch:
 			if err != "" {
@@ -77,6 +88,7 @@ func TestStaticShards(t *testing.T) {
 			done = true
 			break
 		}
+
 	}
 
 	if ndone != 5 {
@@ -84,6 +96,7 @@ func TestStaticShards(t *testing.T) {
 	}
 
 	// bring the crashed shard/group back to life.
+	// log.Printf("=======StartGroup\n\n")
 	cfg.StartGroup(1)
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
@@ -349,6 +362,7 @@ func TestConcurrent1(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	cfg.ShutdownGroup(2)
 
+	log.Printf("")
 	cfg.leave(2)
 
 	time.Sleep(100 * time.Millisecond)

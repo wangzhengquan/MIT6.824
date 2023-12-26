@@ -53,7 +53,7 @@ func (ck *Clerk) Get(key string) string {
 		ClientId: ck.clientId,
 	}
 
-	reply := ck.call("KVServer.Get", &args).(GetReply)
+	reply := ck.call("KVServer.Get", &args).(*GetReply)
 
 	if reply.Err == OK {
 		return reply.Value
@@ -80,7 +80,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ClientId: ck.clientId,
 	}
 
-	reply := ck.call("KVServer.PutAppend", &args).(PutAppendReply)
+	reply := ck.call("KVServer.PutAppend", &args).(*PutAppendReply)
 
 	if reply.Err == OK {
 		return
@@ -117,35 +117,32 @@ func (ck *Clerk) call(method string, args interface{}) interface{} {
 
 	for off := 0; ; off++ {
 		id := (leaderId + off) % len(ck.servers)
+		var reply interface{}
 		switch method {
 		case "KVServer.Get":
-			reply := GetReply{}
-			go func() {
-				if ck.servers[id].Call(method, args, &reply) {
-					doneCh <- result{id, reply}
-				}
-			}()
+			reply = &GetReply{}
 		case "KVServer.PutAppend":
-			reply := PutAppendReply{}
-			go func() {
-				if ck.servers[id].Call(method, args, &reply) {
-					doneCh <- result{id, reply}
-				}
-			}()
+			reply = &PutAppendReply{}
 		default:
 			panic(fmt.Sprintf("I don't know about method %v!\n", method))
 		}
+
+		go func() {
+			if ck.servers[id].Call(method, args, reply) {
+				doneCh <- result{id, reply}
+			}
+		}()
 
 		select {
 		case r = <-doneCh:
 			switch method {
 			case "KVServer.Get":
-				reply := r.reply.(GetReply)
+				reply := r.reply.(*GetReply)
 				if reply.Err == ErrWrongLeader {
 					continue
 				}
 			case "KVServer.PutAppend":
-				reply := r.reply.(PutAppendReply)
+				reply := r.reply.(*PutAppendReply)
 				if reply.Err == ErrWrongLeader {
 					continue
 				}

@@ -112,8 +112,8 @@ type KVServer struct {
 }
 
 func (kv *KVServer) clientsSeqNum() map[int64]int64 {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
+	kv.mu.RLock()
+	defer kv.mu.RUnlock()
 	clientSeqNumMap := make(map[int64]int64)
 	for seqNum, clientStatus := range kv.clientsStatus {
 		clientSeqNumMap[seqNum] = clientStatus.lastSeqNum
@@ -140,7 +140,7 @@ func (kv *KVServer) getClientStatus(clientId int64) *ClientStatus {
 	return status
 }
 
-func (kv *KVServer) operation(op *Op) (isLeader bool) {
+func (kv *KVServer) operate(op *Op) (isLeader bool) {
 	clientStatus := kv.getClientStatus(op.ClientId)
 	clientStatus.mu.Lock()
 	defer clientStatus.mu.Unlock()
@@ -163,7 +163,7 @@ func (kv *KVServer) operation(op *Op) (isLeader bool) {
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	op := Op{Type: GET, Key: args.Key, SeqNum: args.SeqNum, ClientId: args.ClientId}
-	isLeader := kv.operation(&op)
+	isLeader := kv.operate(&op)
 	if isLeader {
 		reply.Err = OK
 		reply.Value, _ = kv.store.get(args.Key)
@@ -174,7 +174,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	op := Op{Type: args.Op, Key: args.Key, Value: args.Value, SeqNum: args.SeqNum, ClientId: args.ClientId}
-	isLeader := kv.operation(&op)
+	isLeader := kv.operate(&op)
 	if isLeader {
 		reply.Err = OK
 	} else {
@@ -301,15 +301,14 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
+	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.persister = persister
 	kv.store = Store{}
 	kv.store.init()
 	kv.clientsStatus = make(map[int64]*ClientStatus)
-	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-	kv.persister = persister
-	// You may need initialization code here.
 	go kv.applier()
 	return kv
 }

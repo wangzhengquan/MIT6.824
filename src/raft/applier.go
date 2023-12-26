@@ -1,6 +1,8 @@
 package raft
 
-import "fmt"
+import (
+	"fmt"
+)
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -36,7 +38,7 @@ func (args *ApplyMsg) String() string {
 }
 
 func (rf *Raft) applier() {
-	for rf.killed() == false {
+	for rf.Killed() == false {
 		rf.mu.Lock()
 		snapshotIndex := rf.snapshotIndex
 		if snapshotIndex > rf.lastApplied {
@@ -64,7 +66,8 @@ func (rf *Raft) applier() {
 			rf.mu.Unlock()
 		} else if rf.lastApplied < rf.commitIndex {
 			// apply commit
-			Debug(CommitEvent, rf.me, "IsLeader=%v Apply commit %d-%d\n", rf.role == LEADER, rf.lastApplied, rf.commitIndex)
+
+			Debug(CommitEvent, rf.me, "IsLeader=%v Apply %d-%d\n", rf.role == LEADER, rf.lastApplied, rf.commitIndex)
 			commandIndex := rf.lastApplied + 1
 			msg := ApplyMsg{
 				CommandValid: true,

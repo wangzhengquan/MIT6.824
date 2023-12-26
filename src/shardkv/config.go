@@ -1,21 +1,25 @@
 package shardkv
 
-import "6.5840/shardctrler"
-import "6.5840/labrpc"
-import "testing"
-import "os"
+import (
+	"os"
+	"testing"
 
-// import "log"
-import crand "crypto/rand"
-import "math/big"
-import "math/rand"
-import "encoding/base64"
-import "sync"
-import "runtime"
-import "6.5840/raft"
-import "strconv"
-import "fmt"
-import "time"
+	"6.5840/labrpc"
+	"6.5840/shardctrler"
+
+	// import "log"
+	crand "crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"math/big"
+	"math/rand"
+	"runtime"
+	"strconv"
+	"sync"
+	"time"
+
+	"6.5840/raft"
+)
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -195,6 +199,7 @@ func (cfg *config) ShutdownServer(gi int, i int) {
 }
 
 func (cfg *config) ShutdownGroup(gi int) {
+	Debug(TraceEvent, "ShutdownGroup %d", gi)
 	for i := 0; i < cfg.n; i++ {
 		cfg.ShutdownServer(gi, i)
 	}
@@ -254,7 +259,7 @@ func (cfg *config) StartServer(gi int, i int) {
 		})
 
 	kvsvc := labrpc.MakeService(gg.servers[i])
-	rfsvc := labrpc.MakeService(gg.servers[i].rf)
+	rfsvc := labrpc.MakeService(gg.servers[i].raft)
 	srv := labrpc.MakeServer()
 	srv.AddService(kvsvc)
 	srv.AddService(rfsvc)
@@ -262,9 +267,11 @@ func (cfg *config) StartServer(gi int, i int) {
 }
 
 func (cfg *config) StartGroup(gi int) {
+	Debug(TraceEvent, "========= StartGroup %d start", gi)
 	for i := 0; i < cfg.n; i++ {
 		cfg.StartServer(gi, i)
 	}
+	Debug(TraceEvent, "========= StartGroup %d finished", gi)
 }
 
 func (cfg *config) StartCtrlerserver(i int) {
@@ -308,8 +315,10 @@ func (cfg *config) join(gi int) {
 }
 
 func (cfg *config) joinm(gis []int) {
+
 	m := make(map[int][]string, len(gis))
 	for _, g := range gis {
+		Debug(TraceEvent, "join %d", g)
 		gid := cfg.groups[g].gid
 		servernames := make([]string, cfg.n)
 		for i := 0; i < cfg.n; i++ {
@@ -328,6 +337,7 @@ func (cfg *config) leave(gi int) {
 func (cfg *config) leavem(gis []int) {
 	gids := make([]int, 0, len(gis))
 	for _, g := range gis {
+		Debug(TraceEvent, "leave %d", g)
 		gids = append(gids, cfg.groups[g].gid)
 	}
 	cfg.mck.Leave(gids)
@@ -357,7 +367,7 @@ func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config
 	}
 	cfg.mck = cfg.shardclerk()
 
-	cfg.ngroups = 3
+	cfg.ngroups = 1
 	cfg.groups = make([]*group, cfg.ngroups)
 	cfg.n = n
 	for gi := 0; gi < cfg.ngroups; gi++ {

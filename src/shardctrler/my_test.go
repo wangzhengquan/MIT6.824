@@ -24,40 +24,60 @@ func disable_TestArray(t *testing.T) {
 
 }
 
+func TestConfig1(t *testing.T) {
+	config1 := Config{}
+	for i := 0; i < len(config1.Shards); i++ {
+		config1.Shards[i] = i
+	}
+
+}
+
+type Person struct {
+	name string
+}
+
+func TestString(t *testing.T) {
+	p1 := Person{name: "abcd"}
+	p2 := p1
+	p2.name = "efg"
+	fmt.Println(p1, p2)
+
+}
+
 func disable_TestConfig(t *testing.T) {
 	config := Config{}
 	config.Groups = map[int][]string{1: {"a", "b"}}
-	config.resetShards()
+	config.ResetShards()
 	log.Printf("config=%+v", config)
 
-	config.joinGroups(map[int][]string{2: {"a", "b"}})
+	config.JoinGroups(map[int][]string{2: {"a", "b"}})
 	log.Printf("config=%+v", config)
 
-	config.joinGroups(map[int][]string{3: {"a", "b"}})
+	config.JoinGroups(map[int][]string{3: {"a", "b"}})
 	log.Printf("config=%+v", config)
 
-	config.joinGroups(map[int][]string{4: {"a", "b"}})
+	config.JoinGroups(map[int][]string{4: {"a", "b"}})
 	log.Printf("config=%+v", config)
 
-	config.joinGroups(map[int][]string{5: {"a", "b"}})
+	config.JoinGroups(map[int][]string{5: {"a", "b"}})
 	log.Printf("config=%+v", config)
 
-	config.joinGroups(map[int][]string{6: {"a", "b"}})
+	config.JoinGroups(map[int][]string{6: {"a", "b"}})
 	log.Printf("config=%+v", config)
 
-	config.joinGroups(map[int][]string{7: {"a", "b"}})
+	config.JoinGroups(map[int][]string{7: {"a", "b"}})
 	log.Printf("config=%+v", config)
 
-	config.joinGroups(map[int][]string{8: {"a", "b"}})
+	config.JoinGroups(map[int][]string{8: {"a", "b"}})
 	log.Printf("config=%+v", config)
 
-	config.joinGroups(map[int][]string{9: {"a", "b"}})
+	config.JoinGroups(map[int][]string{9: {"a", "b"}})
 	log.Printf("config=%+v", config)
 
-	config.joinGroups(map[int][]string{10: {"a", "b"}})
+	config.JoinGroups(map[int][]string{10: {"a", "b"}})
 	log.Printf("config=%+v", config)
 
-	config.joinGroups(map[int][]string{11: {"a", "b"}})
+	config.JoinGroups(map[int][]string{11: {"a", "b"}})
 	log.Printf("config=%+v", config)
 
 	// config.removeGroups([]int{1, 2, 3})

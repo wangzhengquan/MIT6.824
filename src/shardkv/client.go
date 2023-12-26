@@ -8,11 +8,16 @@ package shardkv
 // talks to the group that holds the key's shard.
 //
 
-import "6.5840/labrpc"
-import "crypto/rand"
-import "math/big"
-import "6.5840/shardctrler"
-import "time"
+import (
+	"crypto/rand"
+	"math/big"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"6.5840/labrpc"
+	"6.5840/shardctrler"
+)
 
 // which shard is a key in?
 // please use this function,
@@ -38,6 +43,10 @@ type Clerk struct {
 	config   shardctrler.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+	mu             sync.Mutex
+	seqNum         int64
+	clientId       int64
+	groupLeaderMap GroupLeaderMap
 }
 
 // the tester calls MakeClerk.
@@ -52,6 +61,8 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end
 	// You'll have to add code here.
+	ck.clientId = nrand()
+	ck.groupLeaderMap.init()
 	return ck
 }
 
@@ -60,70 +71,107 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // keeps trying forever in the face of all other errors.
 // You will have to modify this function.
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+	args := GetArgs{
+		Key:      key,
+		SeqNum:   atomic.AddInt64(&ck.seqNum, 1),
+		ClientId: ck.clientId,
+	}
 
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// try each server for the shard.
-			for si := 0; si < len(servers); si++ {
+			leaderId := ck.groupLeaderMap.getLeaderOfGroup(gid)
+			for off := 0; off < len(servers); off++ {
+				si := (leaderId + off) % len(servers)
 				srv := ck.make_end(servers[si])
+				// Debug(GetEvent, "G%d S%d client call get", gid, si)
 				var reply GetReply
-				ok := srv.Call("ShardKV.Get", &args, &reply)
-				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-					return reply.Value
-				}
-				if ok && (reply.Err == ErrWrongGroup) {
-					break
+				if srv.Call("ShardKV.Get", &args, &reply) {
+					if reply.Err == OK || reply.Err == ErrNoKey {
+						ck.groupLeaderMap.setLeaderOfGroup(gid, si)
+						return reply.Value
+					}
+					if reply.Err == ErrWrongGroup {
+						ck.groupLeaderMap.setLeaderOfGroup(gid, si)
+						break
+					}
 				}
 				// ... not ok, or ErrWrongLeader
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(1000 * time.Millisecond)
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 	}
 
-	return ""
+	// return ""
 }
 
 // shared by Put and Append.
 // You will have to modify this function.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
-
+	args := PutAppendArgs{
+		Key:      key,
+		Value:    value,
+		Op:       op,
+		SeqNum:   atomic.AddInt64(&ck.seqNum, 1),
+		ClientId: ck.clientId,
+	}
 
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
-			for si := 0; si < len(servers); si++ {
+			leaderId := ck.groupLeaderMap.getLeaderOfGroup(gid)
+			for off := 0; off < len(servers); off++ {
+				si := (leaderId + off) % len(servers)
 				srv := ck.make_end(servers[si])
+				// Debug(GetEvent, "G%d S%d client call put", gid, si)
 				var reply PutAppendReply
-				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
-				if ok && reply.Err == OK {
-					return
+				if srv.Call("ShardKV.PutAppend", &args, &reply) {
+					if reply.Err == OK {
+						ck.groupLeaderMap.setLeaderOfGroup(gid, si)
+						return
+					}
+					if reply.Err == ErrWrongGroup {
+						ck.groupLeaderMap.setLeaderOfGroup(gid, si)
+						break
+					}
 				}
-				if ok && reply.Err == ErrWrongGroup {
-					break
-				}
-				// ... not ok, or ErrWrongLeader
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(1000 * time.Millisecond)
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
+	ck.PutAppend(key, value, PUT)
 }
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
+	ck.PutAppend(key, value, APPEND)
+}
+
+type GroupLeaderMap struct {
+	mu   sync.RWMutex
+	data map[int]int
+}
+
+func (groups *GroupLeaderMap) init() {
+	groups.data = map[int]int{}
+}
+
+func (groups *GroupLeaderMap) getLeaderOfGroup(gid int) int {
+	groups.mu.RLock()
+	defer groups.mu.RUnlock()
+	return groups.data[gid]
+}
+
+func (groups *GroupLeaderMap) setLeaderOfGroup(gid, leader int) {
+	groups.mu.Lock()
+	defer groups.mu.Unlock()
+	groups.data[gid] = leader
 }

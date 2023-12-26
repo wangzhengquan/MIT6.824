@@ -165,8 +165,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	if rf.snapshotIndex >= args.LastIncludedIndex || rf.lastApplied >= args.LastIncludedIndex {
 		return
 	}
-	// log.Printf("S%d InstallSnapshot before , rf.snapshotIndex=%d, rf.lastLogIndex=%d,  args.LastIncludedIndex=%d, rf.log = %+v\n",
-	// rf.me, rf.snapshotIndex, rf.log.lastIndex(), args.LastIncludedIndex, rf.log)
 	if rf.log.lastIndex() > args.LastIncludedIndex {
 		// keep the log entry at snapshotIndex as the first log entry of the sliced log,
 		// and the log's length always >= 1
@@ -318,6 +316,7 @@ func (rf *Raft) leaderCommit() {
 		return
 	}
 	commitIndex := rf.leaderCountReplicas()
+
 	if commitIndex <= rf.snapshotIndex {
 		return
 	}
@@ -330,7 +329,7 @@ func (rf *Raft) leaderCommit() {
 }
 
 func (rf *Raft) leaderHeartbeats() {
-	for rf.killed() == false {
+	for rf.Killed() == false {
 		rf.mu.Lock()
 		if rf.role == LEADER {
 			rf.leaderLogReplication()
@@ -342,5 +341,5 @@ func (rf *Raft) leaderHeartbeats() {
 
 		time.Sleep(HEARTBEAT_TIME_INTERVAL * time.Millisecond)
 	}
-	// log.Printf("S%d leaderHeartbeats finished\n", rf.me)
+
 }

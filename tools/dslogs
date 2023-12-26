@@ -13,24 +13,27 @@ from rich.traceback import install
 # fmt: off
 # Mapping from topics to colors
 TOPICS = {
-    "TEST": "#fe2c79",
+    
     "INFO": "#ffffff",
     "WARN": "#d08341",
     "ERRO": "#fe2626",
+    "TEST": "#fe2c79",
+    "TRCE": "#fe2626",
 
     "VOTE": "#67a0b2",
     "HEARTBEAT": "#d0b343",
     "CMIT": "#98719f",
     "SNAP": "#FD971F",
 
-    "TIMR": "#9a9a99",
-    "TERM": "#70c43f",
-    "LOG1": "#4878bc",
-    "LOG2": "#398280",
+    "CONFIG": "#9a9a99",
+    "PUT": "#70c43f",
+    "GET": "#4878bc",
+    "MIGRATION": "#398280",
+
     "PERS": "#d08341",
     "DROP": "#ff615c",
     "CLNT": "#00813c",
-    "TRCE": "#fe2626",
+    
 }
 # fmt: on
 
@@ -81,7 +84,7 @@ def main(
             # as peer id
             if topic != "TEST":
                 i = int(msg[1])
-
+            
             # Colorize output by using rich syntax when needed
             if colorize and topic in TOPICS:
                 color = TOPICS[topic]

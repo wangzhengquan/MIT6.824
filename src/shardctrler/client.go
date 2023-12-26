@@ -44,7 +44,7 @@ func (ck *Clerk) Query(num int) Config {
 		SeqNum:   atomic.AddInt64(&ck.seqNum, 1),
 		ClientId: ck.clientId,
 	}
-	reply := ck.call("ShardCtrler.Query", &args).(QueryReply)
+	reply := ck.call("ShardCtrler.Query", &args).(*QueryReply)
 	return reply.Config
 
 }
@@ -100,34 +100,30 @@ func (ck *Clerk) call(method string, args interface{}) interface{} {
 
 	for off := 0; ; off++ {
 		id := (leaderId + off) % len(ck.servers)
-
+		var reply interface{}
 		switch method {
 		case "ShardCtrler.Query":
-			reply := QueryReply{}
-			go func() {
-				if ck.servers[id].Call(method, args, &reply) {
-					doneCh <- result{id, reply}
-				}
-			}()
+			reply = &QueryReply{}
 		default:
-			reply := Reply{}
-			go func() {
-				if ck.servers[id].Call(method, args, &reply) {
-					doneCh <- result{id, reply}
-				}
-			}()
+			reply = &Reply{}
 		}
+
+		go func() {
+			if ck.servers[id].Call(method, args, reply) {
+				doneCh <- result{id, reply}
+			}
+		}()
 
 		select {
 		case r = <-doneCh:
 			switch method {
 			case "ShardCtrler.Query":
-				reply := r.reply.(QueryReply)
+				reply := r.reply.(*QueryReply)
 				if reply.Err == WrongLeader {
 					continue
 				}
 			default:
-				reply := r.reply.(Reply)
+				reply := r.reply.(*Reply)
 				if reply.Err == WrongLeader {
 					continue
 				}

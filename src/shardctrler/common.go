@@ -34,7 +34,7 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
-func getSortedKeysOfGroups(groups map[int][]string) []int {
+func GetSortedKeysOfGroups(groups map[int][]string) []int {
 	var gids []int
 	for gid, _ := range groups {
 		gids = append(gids, gid)
@@ -43,7 +43,7 @@ func getSortedKeysOfGroups(groups map[int][]string) []int {
 	return gids
 }
 
-func (config *Config) getGroupShardsMap() map[int][]int {
+func (config *Config) GetGroupShardsMap() map[int][]int {
 	groupShardsMap := make(map[int][]int)
 	for gid, _ := range config.Groups {
 		groupShardsMap[gid] = make([]int, 0)
@@ -54,7 +54,7 @@ func (config *Config) getGroupShardsMap() map[int][]int {
 	return groupShardsMap
 }
 
-func (config *Config) getGidWithCmpNumShards(groupShardsMap map[int][]int, cmp func(a, b int) bool) int {
+func (config *Config) GetGidWithCmpNumShards(groupShardsMap map[int][]int, cmp func(a, b int) bool) int {
 	if len(groupShardsMap) == 0 {
 		return 0
 	}
@@ -76,32 +76,32 @@ func (config *Config) getGidWithCmpNumShards(groupShardsMap map[int][]int, cmp f
 	return m_gid
 }
 
-func (config *Config) getGidWithMinimumShards(goupShardMap map[int][]int) int {
-	return config.getGidWithCmpNumShards(goupShardMap, func(a, b int) bool {
+func (config *Config) GetGidWithMinimumShards(goupShardMap map[int][]int) int {
+	return config.GetGidWithCmpNumShards(goupShardMap, func(a, b int) bool {
 		return a < b
 	})
 }
 
-func (config *Config) getGidWithMaximumShards(goupShardMap map[int][]int) int {
+func (config *Config) GetGidWithMaximumShards(goupShardMap map[int][]int) int {
 	if _, ok := goupShardMap[0]; ok {
 		return 0
 	}
-	return config.getGidWithCmpNumShards(goupShardMap, func(a, b int) bool {
+	return config.GetGidWithCmpNumShards(goupShardMap, func(a, b int) bool {
 		return a > b
 	})
 }
 
-func (config *Config) clone() *Config {
+func (config *Config) Clone() Config {
 	newConfig := Config{Num: config.Num, Shards: config.Shards, Groups: make(map[int][]string)}
 	for gid, servers := range config.Groups {
 		newConfig.Groups[gid] = make([]string, len(servers))
 		copy(newConfig.Groups[gid], servers)
 	}
-	return &newConfig
+	return newConfig
 }
 
-func (config *Config) resetShards() {
-	gids := getSortedKeysOfGroups(config.Groups) // make sure map iteration is deterministic.
+func (config *Config) ResetShards() {
+	gids := GetSortedKeysOfGroups(config.Groups) // make sure map iteration is deterministic.
 	for shard := 0; shard < NShards; {
 		for _, gid := range gids {
 			config.Shards[shard] = gid
@@ -115,16 +115,16 @@ func (config *Config) resetShards() {
 	// log.Printf("resetShards: config= %+v", config)
 }
 
-func (config *Config) joinGroups(groups map[int][]string) {
-	gids := getSortedKeysOfGroups(groups) // make sure map iteration is deterministic.
+func (config *Config) JoinGroups(groups map[int][]string) {
+	gids := GetSortedKeysOfGroups(groups) // make sure map iteration is deterministic.
 	for _, new_gid := range gids {
 		new_servers := groups[new_gid]
 		if _, ok := config.Groups[new_gid]; !ok {
 			for cnt := 0; cnt < NShards; cnt++ {
 				// find the goup with maximum shards, move one of that goup's shards to new gid
-				groupShardsMap := config.getGroupShardsMap()
+				groupShardsMap := config.GetGroupShardsMap()
 				delete(groupShardsMap, new_gid) // delete new_gid itself to keep from getGidWithMaximumShards returning this gid
-				maxGid := config.getGidWithMaximumShards(groupShardsMap)
+				maxGid := config.GetGidWithMaximumShards(groupShardsMap)
 				maxGroupShards := groupShardsMap[maxGid]
 				if cnt >= len(maxGroupShards) && maxGid != 0 {
 					break
@@ -137,16 +137,16 @@ func (config *Config) joinGroups(groups map[int][]string) {
 	// log.Printf("joinGroups: groups=%+v, config=%+v", groups, config)
 }
 
-func (config *Config) removeGroups(gids []int) {
+func (config *Config) RemoveGroups(gids []int) {
 	for _, gid := range gids {
 		if _, ok := config.Groups[gid]; ok {
-			removeShards := config.getGroupShardsMap()[gid]
+			removeShards := config.GetGroupShardsMap()[gid]
 			delete(config.Groups, gid)
 			for _, rmShard := range removeShards {
 				// find the goup with minimum shards, move the removed group's shards to that group
-				groupShardsMap := config.getGroupShardsMap()
+				groupShardsMap := config.GetGroupShardsMap()
 				delete(groupShardsMap, gid) // delete gid itself to keep from getGidWithMinimumShards returning this gid
-				config.Shards[rmShard] = config.getGidWithMinimumShards(groupShardsMap)
+				config.Shards[rmShard] = config.GetGidWithMinimumShards(groupShardsMap)
 			}
 		}
 	}
@@ -154,7 +154,7 @@ func (config *Config) removeGroups(gids []int) {
 	// log.Printf("removeGroups: %+v, config=%+v", gids, config)
 }
 
-func (config *Config) moveShard(shard int, gid int) {
+func (config *Config) MoveShard(shard int, gid int) {
 	config.Shards[shard] = gid
 	// log.Printf("moveShard: shard=%v,gid=%v, config=%+v", shard, gid, config)
 }

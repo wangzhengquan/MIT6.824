@@ -160,8 +160,6 @@ func (rf *Raft) countVotes(replyCh <-chan *RequestVoteReply) int {
 		if reply != nil {
 			if reply.VoteGranted {
 				count++
-				// Debug(VoteEvent, rf.me, "vote reiceved granted reply, count=%d, rf.currentTerm=%d\n",
-				// 	count, rf.currentTerm)
 			} else {
 				rf.mu.Lock()
 				if reply.Term > rf.currentTerm {
@@ -193,11 +191,10 @@ func (rf *Raft) becomeLeader() {
 }
 
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	for rf.Killed() == false {
 		// pause for a random amount of time between 50 and 350 milliseconds.
 		time.Sleep(ELECTION_TIMEOUT + time.Duration(rand.Int63n(300))*time.Millisecond)
 		// leaderElection run in a seperate goroutine so that another election preocess can start when this election process was timeout with out a result
 		go rf.leaderElection()
 	}
-	// log.Printf("S%d ticker finished\n", rf.me)
 }

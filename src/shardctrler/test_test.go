@@ -7,7 +7,9 @@ import (
 	"time"
 )
 
-// import "time"
+func init() {
+	debugInit()
+}
 
 func check(t *testing.T, groups []int, ck *Clerk) {
 	c := ck.Query(-1)

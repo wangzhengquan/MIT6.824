@@ -205,14 +205,14 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
-// but it does call the Kill() method. your code can use killed() to
+// but it does call the Kill() method. your code can use Killed() to
 // check whether Kill() has been called. the use of atomic avoids the
 // need for a lock.
 //
 // the issue is that long-running goroutines use memory and may chew
 // up CPU time, perhaps causing later tests to fail and generating
 // confusing debug output. any goroutine with a long-running loop
-// should call killed() to check whether it should stop.
+// should call Killed() to check whether it should stop.
 func (rf *Raft) Kill() {
 	Debug(TraceEvent, rf.me, "Kill")
 	atomic.StoreInt32(&rf.dead, 1)
@@ -220,7 +220,7 @@ func (rf *Raft) Kill() {
 	rf.applyCond.Broadcast()
 }
 
-func (rf *Raft) killed() bool {
+func (rf *Raft) Killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
 }

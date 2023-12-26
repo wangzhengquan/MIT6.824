@@ -1,7 +1,11 @@
 VERBOSE=1 go test -run TestFigure8Unreliable2C | tee output.log | dslogs -c5
 VERBOSE=1 dstest -p8 -n20 TestFigure8Unreliable2C
-
 VERBOSE=1 go test -run TestFigure8Unreliable2C | dslogs -c5
 
-
 dslogs 20231117_101405/TestFigure8Unreliable2C_1.log -c5
+
+
+## lab4
+VERBOSE=1 go test -run TestConcurrent1 | dslogs -j CONFIG,MIGRATION
+
+

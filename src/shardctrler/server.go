@@ -53,11 +53,11 @@ func (configs *Configs) init() {
 
 }
 
-func (configs *Configs) append(config *Config) {
+func (configs *Configs) append(config Config) {
 	configs.mu.Lock()
 	defer configs.mu.Unlock()
 	config.Num = len(configs.entries)
-	configs.entries = append(configs.entries, *config)
+	configs.entries = append(configs.entries, config)
 }
 
 func (configs *Configs) getConfig(index int) *Config {
@@ -105,7 +105,7 @@ func (sc *ShardCtrler) getClientStatus(clientId int64) *ClientStatus {
 	return status
 }
 
-func (sc *ShardCtrler) operation(opType string, clientId int64, seqNum int64, args interface{}) (isLeader bool) {
+func (sc *ShardCtrler) operate(opType string, clientId int64, seqNum int64, args interface{}) (isLeader bool) {
 	clientStatus := sc.getClientStatus(clientId)
 	clientStatus.mu.Lock()
 	defer clientStatus.mu.Unlock()
@@ -121,13 +121,13 @@ func (sc *ShardCtrler) operation(opType string, clientId int64, seqNum int64, ar
 		}
 		return true
 	} else {
-		DPrintf(DEBUG, "S%d operation ErrWrongLeader args= %+v\n", sc.me, args)
+		DPrintf(DEBUG, "S%d operate ErrWrongLeader args= %+v\n", sc.me, args)
 		return false
 	}
 }
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *Reply) {
-	isLeader := sc.operation(JOIN, args.ClientId, args.SeqNum, *args)
+	isLeader := sc.operate(JOIN, args.ClientId, args.SeqNum, *args)
 	if isLeader {
 		reply.Err = OK
 	} else {
@@ -137,7 +137,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *Reply) {
 }
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *Reply) {
-	isLeader := sc.operation(LEAVE, args.ClientId, args.SeqNum, *args)
+	isLeader := sc.operate(LEAVE, args.ClientId, args.SeqNum, *args)
 	if isLeader {
 		reply.Err = OK
 	} else {
@@ -146,7 +146,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *Reply) {
 }
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *Reply) {
-	isLeader := sc.operation(MOVE, args.ClientId, args.SeqNum, *args)
+	isLeader := sc.operate(MOVE, args.ClientId, args.SeqNum, *args)
 	if isLeader {
 		reply.Err = OK
 	} else {
@@ -155,7 +155,7 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *Reply) {
 }
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
-	isLeader := sc.operation(QUERY, args.ClientId, args.SeqNum, *args)
+	isLeader := sc.operate(QUERY, args.ClientId, args.SeqNum, *args)
 	if isLeader {
 		reply.Err = OK
 		reply.Config = *sc.configs.getConfig(args.Num)
@@ -185,12 +185,12 @@ func (sc *ShardCtrler) applier() {
 				DPrintf(DEBUG, "S%d apply join : %+v\n", sc.me, args)
 				clientStatus := sc.getClientStatus(args.ClientId)
 				if !clientStatus.done(args.SeqNum) {
-					config := sc.configs.getLatestConfig().clone()
+					config := sc.configs.getLatestConfig().Clone()
 					if config.Num == 0 { // the first time
 						config.Groups = args.Groups
-						config.resetShards()
+						config.ResetShards()
 					} else {
-						config.joinGroups(args.Groups)
+						config.JoinGroups(args.Groups)
 					}
 					sc.configs.append(config)
 					clientStatus.updateSeqNum(args.SeqNum)
@@ -200,8 +200,8 @@ func (sc *ShardCtrler) applier() {
 				DPrintf(DEBUG, "S%d apply leave : %+v\n", sc.me, args)
 				clientStatus := sc.getClientStatus(args.ClientId)
 				if !clientStatus.done(args.SeqNum) {
-					config := sc.configs.getLatestConfig().clone()
-					config.removeGroups(args.GIDs)
+					config := sc.configs.getLatestConfig().Clone()
+					config.RemoveGroups(args.GIDs)
 					sc.configs.append(config)
 					clientStatus.updateSeqNum(args.SeqNum)
 				}
@@ -210,8 +210,8 @@ func (sc *ShardCtrler) applier() {
 				DPrintf(DEBUG, "S%d apply move : %+v\n", sc.me, args)
 				clientStatus := sc.getClientStatus(args.ClientId)
 				if !clientStatus.done(args.SeqNum) {
-					config := sc.configs.getLatestConfig().clone()
-					config.moveShard(args.Shard, args.GID)
+					config := sc.configs.getLatestConfig().Clone()
+					config.MoveShard(args.Shard, args.GID)
 					sc.configs.append(config)
 					clientStatus.updateSeqNum(args.SeqNum)
 				}
@@ -239,14 +239,15 @@ func (sc *ShardCtrler) Raft() *raft.Raft {
 // form the fault-tolerant shardctrler service.
 // me is the index of the current server in servers[].
 func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister) *ShardCtrler {
-	sc := new(ShardCtrler)
-	sc.me = me
-	sc.configs.init()
 	labgob.Register(Op{})
 	labgob.Register(JoinArgs{})
 	labgob.Register(LeaveArgs{})
 	labgob.Register(MoveArgs{})
 	labgob.Register(QueryArgs{})
+
+	sc := new(ShardCtrler)
+	sc.me = me
+	sc.configs.init()
 	sc.applyCh = make(chan raft.ApplyMsg)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
 

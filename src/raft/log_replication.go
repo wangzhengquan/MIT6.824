@@ -315,13 +315,21 @@ func (rf *Raft) leaderCommit() {
 	if rf.role != LEADER {
 		return
 	}
-	commitIndex := rf.leaderCountReplicas()
+	var matchIndex []int
+	matchIndex = append(matchIndex, rf.matchIndex...)
+	matchIndex[rf.me] = rf.log.lastIndex()
+	sort.Ints(matchIndex)
+	commitIndex := matchIndex[len(rf.matchIndex)/2]
 
 	if commitIndex <= rf.snapshotIndex {
 		return
 	}
-	// Raft never commits log entries from previous terms by count- ing replicas. Only log entries from the leader’s current term are committed by counting replicas;
-	if rf.log.entry(commitIndex).Term == rf.currentTerm && commitIndex > rf.commitIndex {
+	// In paper it says that "Raft never commits log entries from previous terms by counting replicas.
+	// Only log entries from the leader’s current term are committed by counting replicas" just in case the situation of Figure 8.
+	// The situation of Figure 8 can also be avoid if all of the replicas have been agreed at the same index.
+	// I add this sencond condition in this code so that it is unnecessary to add another request
+	// when the servers were shutdown and then restart to make sure the saved logs were commited and applied
+	if (rf.log.entry(commitIndex).Term == rf.currentTerm || commitIndex == matchIndex[len(matchIndex)-1]) && commitIndex > rf.commitIndex {
 		Debug(CommitEvent, rf.me, "leader commit, old commitIndex = %d, new commitIndex = %d\n", rf.commitIndex, commitIndex)
 		rf.commitIndex = commitIndex
 		rf.applyCond.Broadcast()

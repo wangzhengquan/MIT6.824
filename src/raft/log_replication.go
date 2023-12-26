@@ -303,24 +303,21 @@ func (rf *Raft) leaderLogReplication() {
 	}
 }
 
-func (rf *Raft) leaderCountReplicas() int {
+func (rf *Raft) getSortedMatchIndex() []int {
 	var matchIndex []int
 	matchIndex = append(matchIndex, rf.matchIndex...)
 	matchIndex[rf.me] = rf.log.lastIndex()
 	sort.Ints(matchIndex)
-	return matchIndex[len(rf.matchIndex)/2]
+	return matchIndex
 }
 
 func (rf *Raft) leaderCommit() {
 	if rf.role != LEADER {
 		return
 	}
-	var matchIndex []int
-	matchIndex = append(matchIndex, rf.matchIndex...)
-	matchIndex[rf.me] = rf.log.lastIndex()
-	sort.Ints(matchIndex)
-	commitIndex := matchIndex[len(rf.matchIndex)/2]
 
+	matchIndex := rf.getSortedMatchIndex()
+	commitIndex := matchIndex[len(rf.matchIndex)/2]
 	if commitIndex <= rf.snapshotIndex {
 		return
 	}

@@ -2,7 +2,6 @@ package shardkv
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -39,8 +38,11 @@ func (cs *ClientStatus) done(seqNum int64) bool {
 func (cs *ClientStatus) updateSeqNum(seqNum int64) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	cs.lastSeqNum = seqNum
-	cs.cond.Broadcast()
+	if seqNum > cs.lastSeqNum {
+		cs.lastSeqNum = seqNum
+		cs.cond.Broadcast()
+	}
+
 }
 
 type ClientStatusMap struct {
@@ -48,41 +50,74 @@ type ClientStatusMap struct {
 	data map[int64]*ClientStatus
 }
 
-func (cm *ClientStatusMap) init() {
-	cm.data = make(map[int64]*ClientStatus)
+func (m *ClientStatusMap) init() {
+	m.data = make(map[int64]*ClientStatus)
 }
 
-func (cm *ClientStatusMap) getClientSeqNumMap() map[int64]int64 {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
+func (m *ClientStatusMap) getClientSeqNumMap() map[int64]int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	clientSeqNumMap := make(map[int64]int64)
-	for seqNum, clientStatus := range cm.data {
+	for seqNum, clientStatus := range m.data {
 		clientSeqNumMap[seqNum] = clientStatus.lastSeqNum
 	}
 	return clientSeqNumMap
 }
 
-func (cm *ClientStatusMap) getClientStatus(clientId int64) *ClientStatus {
-	cm.mu.RLock()
-	status, ok := cm.data[clientId]
-	cm.mu.RUnlock()
-	if ok {
-		return status
+func (m *ClientStatusMap) putClientSeqNumMap(clientSeqNumMap map[int64]int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for clientId, seqNum := range clientSeqNumMap {
+		status, ok := m.data[clientId]
+		if !ok {
+			status = new(ClientStatus)
+			status.init()
+			m.data[clientId] = status
+		}
+		status.updateSeqNum(seqNum)
 	}
+}
 
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	status, ok = cm.data[clientId]
+func (m *ClientStatusMap) get(clientId int64) *ClientStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	status, ok := m.data[clientId]
 	if !ok {
 		status = new(ClientStatus)
 		status.init()
-		cm.data[clientId] = status
+		m.data[clientId] = status
 	}
 	return status
 }
 
+type ConfigInPrecessingMap struct {
+	mu      sync.RWMutex
+	cond    *sync.Cond
+	entries map[int]bool
+}
+
+func (m *ConfigInPrecessingMap) init() {
+	m.entries = map[int]bool{}
+	m.cond = sync.NewCond(&m.mu)
+}
+
+func (m *ConfigInPrecessingMap) put(num int) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.entries[num] {
+		return false
+	}
+	m.entries[num] = true
+	return true
+}
+
+func (m *ConfigInPrecessingMap) get(num int) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.entries[num]
+}
+
 type ShardKV struct {
-	// mu           sync.RWMutex
 	me           int
 	raft         *raft.Raft
 	applyCh      chan raft.ApplyMsg
@@ -92,22 +127,23 @@ type ShardKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	mu               sync.RWMutex
-	cond             *sync.Cond
-	config           shardctrler.Config
-	store            [shardctrler.NShards]map[string]string
-	restoreCompleted bool
+	mu     sync.RWMutex
+	cond   *sync.Cond
+	config shardctrler.Config
+	store  [shardctrler.NShards]map[string]string
 
 	ctrlClerk *shardctrler.Clerk
 	persister *raft.Persister
 
 	clientStatusMap ClientStatusMap
 
-	seqNum         int64
-	clientId       int64
-	groupLeaderMap GroupLeaderMap
+	seqNum                int64
+	clientId              int64
+	groupLeaderMap        GroupLeaderMap
+	configInPrecessingMap ConfigInPrecessingMap
 
-	killChan chan bool
+	servers []*labrpc.ClientEnd
+	// killChan chan bool
 }
 
 // ===================== store =======================
@@ -157,10 +193,17 @@ func (kv *ShardKV) append(key string, value string) Err {
 	return OK
 }
 
-func (kv *ShardKV) setStore(store [shardctrler.NShards]map[string]string) {
+func (kv *ShardKV) setStore(store [shardctrler.NShards]map[string]string, config *shardctrler.Config) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	kv.store = store
+	kv.initStore()
+	for shard, data := range store {
+		for k, v := range data {
+			kv.store[shard][k] = v
+		}
+	}
+	kv.config = (*config).Clone()
+
 }
 
 func (kv *ShardKV) putShards(shards map[int]map[string]string) {
@@ -168,6 +211,7 @@ func (kv *ShardKV) putShards(shards map[int]map[string]string) {
 	defer kv.mu.Unlock()
 
 	for shard, data := range shards {
+		Assert(kv.config.Shards[shard] != kv.gid, "G%d S%d putShards shard=%d, config=%+v", kv.gid, kv.me, shard, kv.config)
 		kv.store[shard] = make(map[string]string)
 		for k, v := range data {
 			kv.store[shard][k] = v
@@ -180,6 +224,7 @@ func (kv *ShardKV) getShards(shards []int) map[int]map[string]string {
 	defer kv.mu.RUnlock()
 	data := map[int]map[string]string{}
 	for _, shard := range shards {
+		// Assert(kv.config.Shards[shard] != kv.gid, "G%d S%d getShards shard=%d, config=%+v", kv.gid, kv.me, shard, kv.config)
 		data[shard] = kv.store[shard]
 	}
 	return data
@@ -193,37 +238,17 @@ func (kv *ShardKV) getConfig() shardctrler.Config {
 	return kv.config
 }
 
-func (kv *ShardKV) waitUntilRestoreCompleted() {
+func (kv *ShardKV) setConfig(config shardctrler.Config) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	// Debug(InfoEvent, "G%d S%d ===waitUntilRestoreCompleted 1", kv.gid, kv.me)
-	for !kv.restoreCompleted {
-		// Debug(InfoEvent, "G%d S%d ===waitUntilRestoreCompleted 2", kv.gid, kv.me)
-		kv.cond.Wait()
+	if config.Num > kv.config.Num {
+		kv.config = config
+		kv.cond.Broadcast()
 	}
-	// Debug(InfoEvent, "G%d S%d ===waitUntilRestoreCompleted 3", kv.gid, kv.me)
-}
-
-func (kv *ShardKV) isRestoreCompleted() bool {
-	kv.mu.RLock()
-	defer kv.mu.RUnlock()
-	return kv.restoreCompleted
-}
-
-func (kv *ShardKV) completedRestore() {
-	kv.mu.Lock()
-	kv.restoreCompleted = true
-	kv.mu.Unlock()
-	kv.cond.Broadcast()
-	Debug(InfoEvent, "G%d S%d ===completedRestore", kv.gid, kv.me)
 }
 
 func (kv *ShardKV) operate(opType string, clientId int64, seqNum int64, args interface{}) Err {
-	if !kv.isRestoreCompleted() {
-		kv.waitUntilRestoreCompleted()
-	}
-
-	clientStatus := kv.clientStatusMap.getClientStatus(clientId)
+	clientStatus := kv.clientStatusMap.get(clientId)
 	clientStatus.mu.Lock()
 	defer clientStatus.mu.Unlock()
 	if clientStatus.done(seqNum) {
@@ -256,59 +281,46 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	}
 }
 
-func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *Reply) {
 
 	reply.Err = kv.operate(args.Op, args.ClientId, args.SeqNum, *args)
+}
+
+func (kv *ShardKV) SetConfig(args *SetConfigArgs, reply *Reply) {
+	reply.Err = kv.operate(SET_CONFIG, args.ClientId, args.SeqNum, *args)
 }
 
 func (kv *ShardKV) GetShards(args *GetShardsArgs, reply *GetShardsReply) {
 	// Debug(MigrationEvent, "G%d S%d  GetShards, args=%+v, config=%+v",
 	// 	kv.gid, kv.me, args, kv.config)
+	kv.mu.Lock()
+	for kv.config.Num < args.ConfigNum {
+		kv.cond.Wait()
+	}
+	kv.mu.Unlock()
+
 	reply.Err = kv.operate(GET_SHARDS, args.ClientId, args.SeqNum, *args)
 	if reply.Err != OK {
 		return
 	}
-	// Debug(MigrationEvent, "G%d S%d  GetShards ok args=%+v, config=%+v ",
-	// 	kv.gid, kv.me, args, kv.config)
-	reply.Err = kv.changeConfig(args.Config)
-	if reply.Err != OK {
-		return
-	}
-	// kv.configStatus.removeShards(args.Shards) // stop serve args.Shards
+	Debug(MigrationEvent, "G%d S%d  GetShards args=%+v, config=%+v ",
+		kv.gid, kv.me, args, kv.config)
+
 	reply.Shards = kv.getShards(args.Shards)
-	Debug(MigrationEvent, "G%d S%d  GetShards ok 2. reply=%+v, config=%+v",
-		kv.gid, kv.me, reply, kv.config)
+	reply.ClientSeqNumMap = kv.clientStatusMap.getClientSeqNumMap()
 
 }
 
-func (kv *ShardKV) PutShards(args *PutShardsArgs, reply *PutShardsReply) {
+func (kv *ShardKV) PutShards(args *PutShardsArgs, reply *Reply) {
 	reply.Err = kv.operate(PUT_SHARDS, args.ClientId, args.SeqNum, *args)
 }
 
 func (kv *ShardKV) applier() {
-	// for !kv.Killed() {
-	// 	msg := <-kv.applyCh
-	// 	kv.apply(msg)
-	// }
-
-	const timeout = 2000 * time.Millisecond
-	t := time.NewTimer(timeout)
-	Debug(TraceEvent, "G%d S%d applier begin", kv.gid, kv.me)
 	for !kv.Killed() {
-		select {
-		case <-kv.killChan:
-			return
-		case msg := <-kv.applyCh:
-			Debug(TraceEvent, "G%d S%d apply msg ", kv.gid, kv.me)
-			kv.apply(msg)
-			if !kv.isRestoreCompleted() {
-				t.Reset(timeout)
-			}
-		case <-t.C:
-			kv.completedRestore()
-
-		}
+		msg := <-kv.applyCh
+		kv.apply(msg)
 	}
+
 }
 
 func (kv *ShardKV) apply(msg raft.ApplyMsg) {
@@ -331,10 +343,10 @@ func (kv *ShardKV) applyOp(op Op) {
 	case PUT:
 		args := op.Args.(PutAppendArgs)
 		Debug(PutEvent, "G%d S%d apply PUT : args=%+v, config=%+v\n", kv.gid, kv.me, args, kv.config)
-		clientStatus := kv.clientStatusMap.getClientStatus(args.ClientId)
+		clientStatus := kv.clientStatusMap.get(args.ClientId)
 		if !clientStatus.done(args.SeqNum) {
 			err = kv.put(args.Key, args.Value)
-			if err == OK {
+			if err != ErrWrongGroup {
 				clientStatus.updateSeqNum(args.SeqNum)
 			}
 
@@ -342,10 +354,10 @@ func (kv *ShardKV) applyOp(op Op) {
 	case APPEND:
 		args := op.Args.(PutAppendArgs)
 		Debug(PutEvent, "G%d S%d apply APPEND : args=%+v, config=%+v\n", kv.gid, kv.me, args, kv.config)
-		clientStatus := kv.clientStatusMap.getClientStatus(args.ClientId)
+		clientStatus := kv.clientStatusMap.get(args.ClientId)
 		if !clientStatus.done(args.SeqNum) {
 			err = kv.append(args.Key, args.Value)
-			if err == OK {
+			if err != ErrWrongGroup {
 				clientStatus.updateSeqNum(args.SeqNum)
 			}
 
@@ -353,41 +365,40 @@ func (kv *ShardKV) applyOp(op Op) {
 	case GET:
 		args := op.Args.(GetArgs)
 		Debug(GetEvent, "G%d S%d apply GET : args=%+v, config=%+v\n", kv.gid, kv.me, args, kv.config)
-		clientStatus := kv.clientStatusMap.getClientStatus(args.ClientId)
+		clientStatus := kv.clientStatusMap.get(args.ClientId)
 		if !clientStatus.done(args.SeqNum) {
+			_, err = kv.get(args.Key)
+			if err != ErrWrongGroup {
+				clientStatus.updateSeqNum(args.SeqNum)
+			}
 
-			clientStatus.updateSeqNum(args.SeqNum)
 		}
 	case GET_SHARDS:
 		args := op.Args.(GetShardsArgs)
 		Debug(MigrationEvent, "G%d S%d apply GET_SHARDS : args=%+v, config=%+v\n", kv.gid, kv.me, args, kv.config)
-		clientStatus := kv.clientStatusMap.getClientStatus(args.ClientId)
+		clientStatus := kv.clientStatusMap.get(args.ClientId)
 		if !clientStatus.done(args.SeqNum) {
 			clientStatus.updateSeqNum(args.SeqNum)
 		}
 	case PUT_SHARDS:
 		args := op.Args.(PutShardsArgs)
-		// Debug(MigrationEvent, "G%d S%d apply %s , args=%+v, config=%+v\n", kv.gid, kv.me, op.Type, args, kv.config)
-		clientStatus := kv.clientStatusMap.getClientStatus(args.ClientId)
+		Debug(MigrationEvent, "G%d S%d apply %s , args=%+v, config=%+v\n", kv.gid, kv.me, op.Type, args, kv.config)
+		clientStatus := kv.clientStatusMap.get(args.ClientId)
 		if !clientStatus.done(args.SeqNum) {
 			// Debug(MigrationEvent, "G%d S%d apply %s 1, args=%+v, config=%+v\n", kv.gid, kv.me, op.Type, args, kv.config)
 			kv.putShards(args.Shards)
-			Debug(MigrationEvent, "G%d S%d apply %s 2, args=%+v, config=%+v, kv.Killed() =%v", kv.gid, kv.me, op.Type, args, kv.config, kv.Killed())
+			kv.clientStatusMap.putClientSeqNumMap(args.ClientSeqNumMap)
 			clientStatus.updateSeqNum(args.SeqNum)
 		}
 
-	case SYNC_CONFIG:
+	case SET_CONFIG:
 		args := op.Args.(SetConfigArgs)
-		Debug(ConfigEvent, "G%d S%d apply SYNC_CONFIG,  old config=%+v, new config=%+v",
+		Debug(ConfigEvent, "G%d S%d apply SET_CONFIG,  old config=%+v, new config=%+v",
 			kv.gid, kv.me, kv.config, args.Config)
-		clientStatus := kv.clientStatusMap.getClientStatus(args.ClientId)
+		clientStatus := kv.clientStatusMap.get(args.ClientId)
 		if !clientStatus.done(args.SeqNum) {
-			// 这里不需要锁，因为kv.config只有在appler这里会改变，而appler是单线程的
-			if args.Config.Num > kv.config.Num {
-				kv.config = args.Config.Clone()
-				// Debug(ConfigEvent, "G%d S%d apply SYNC_CONFIG, config=%+v", kv.gid, kv.me, kv.config)
-				clientStatus.updateSeqNum(args.SeqNum)
-			}
+			kv.setConfig(args.Config.Clone())
+			clientStatus.updateSeqNum(args.SeqNum)
 		}
 	default:
 		log.Fatalf("I don't know about type %v!\n", op.Type)
@@ -404,14 +415,19 @@ func (kv *ShardKV) applySnap(snapshot []byte, index int) {
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
 	var lastIncludedIndex int
-	var data [shardctrler.NShards]map[string]string
+	var store [shardctrler.NShards]map[string]string
+	var config shardctrler.Config
 	var clientSeqNumMap map[int64]int64
 	if d.Decode(&lastIncludedIndex) != nil {
 		log.Fatalf("snapshot decode lastIncludedIndex error")
 		return
 	}
-	if d.Decode(&data) != nil {
-		log.Fatalf("snapshot decode data error")
+	if d.Decode(&store) != nil {
+		log.Fatalf("snapshot decode store error")
+		return
+	}
+	if d.Decode(&config) != nil {
+		log.Fatalf("snapshot decode config error")
 		return
 	}
 	if d.Decode(&clientSeqNumMap) != nil {
@@ -422,9 +438,9 @@ func (kv *ShardKV) applySnap(snapshot []byte, index int) {
 		log.Fatalf("snapshot doesn't match m.SnapshotIndex")
 		return
 	}
-	kv.setStore(data)
+	kv.setStore(store, &config)
 	for clientId, seqNum := range clientSeqNumMap {
-		clientStatus := kv.clientStatusMap.getClientStatus(clientId)
+		clientStatus := kv.clientStatusMap.get(clientId)
 		clientStatus.updateSeqNum(seqNum)
 	}
 }
@@ -435,6 +451,7 @@ func (kv *ShardKV) snapshot(logIndex int) {
 	e := labgob.NewEncoder(w)
 	e.Encode(logIndex)
 	e.Encode(kv.store)
+	e.Encode(kv.config)
 	e.Encode(kv.clientStatusMap.getClientSeqNumMap())
 	kv.raft.Snapshot(logIndex, w.Bytes())
 	go func() {
@@ -443,78 +460,144 @@ func (kv *ShardKV) snapshot(logIndex int) {
 
 }
 
-func (kv *ShardKV) callOtherGroup(method string, gid int, servers []string, args interface{}) interface{} {
+func (kv *ShardKV) callGetShardsFromGroup(gid int, servers []string, args *GetShardsArgs) *GetShardsReply {
+	Debug(MigrationEvent, "G%d S%d callGetShardsFromGroup gid=%d, args=%+v", kv.gid, kv.me, gid, args)
+	reply := kv.callOtherGroup("ShardKV.GetShards", gid, servers, args).(*GetShardsReply)
+	return reply
+}
 
-	for {
-		// try each known server.
-		leaderId := kv.groupLeaderMap.getLeaderOfGroup(gid)
-		for off := 0; off < len(servers); off++ {
-			si := (leaderId + off) % len(servers)
-			srv := kv.make_end(servers[si])
+func (kv *ShardKV) callPutShardsToGroup(gid int, servers []string, args *PutShardsArgs) {
+	Debug(ConfigEvent, "G%d S%d callPutShardsToGroup gid=%d, args=%+v", kv.gid, kv.me, gid, args)
+	kv.callOtherGroup("ShardKV.PutShards", gid, servers, args)
+}
+
+func (kv *ShardKV) callSetConfigToGroup(gid int, servers []string, args *SetConfigArgs) {
+	Debug(ConfigEvent, "G%d S%d callSetConfigToGroup gid=%d, args=%+v", kv.gid, kv.me, gid, args)
+	kv.callOtherGroup("ShardKV.SetConfig", gid, servers, args)
+}
+
+func (kv *ShardKV) callOtherGroup(method string, gid int, servers []string, args interface{}) interface{} {
+	type result struct {
+		serverID int
+		reply    interface{}
+	}
+
+	const timeout = 100 * time.Millisecond
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+
+	doneCh := make(chan result, len(servers))
+	leaderId := kv.groupLeaderMap.get(gid)
+	var r result
+	var srvs []*labrpc.ClientEnd
+	if gid == kv.gid {
+		srvs = append(srvs, kv.servers...)
+		Assert(len(srvs) > 0, "len(srvs)=%d, len(kv.servers)=%d", len(srvs), len(kv.servers))
+	} else {
+		for _, server := range servers {
+			srvs = append(srvs, kv.make_end(server))
+		}
+	}
+
+	for off := 0; ; off++ {
+		si := (leaderId + off) % len(srvs)
+		srv := srvs[si]
+
+		var reply interface{}
+		switch method {
+		case "ShardKV.GetShards":
+			reply = &GetShardsReply{}
+		default:
+			reply = &Reply{}
+		}
+
+		go func() {
+			if srv.Call(method, args, reply) {
+				doneCh <- result{si, reply}
+			}
+		}()
+
+		select {
+		case r = <-doneCh:
 			switch method {
 			case "ShardKV.GetShards":
-				var reply GetShardsReply
-				ok := srv.Call(method, args, &reply)
-				Debug(MigrationEvent, "G%d S%d callOtherGroup %d ShardKV.GetShards reply=%+v", kv.gid, kv.me, gid, reply)
-				if ok && reply.Err != ErrWrongLeader {
-					kv.groupLeaderMap.setLeaderOfGroup(gid, si)
-					return &reply
-				}
-			case "ShardKV.PutShards":
-				var reply PutShardsReply
-				ok := srv.Call(method, args, &reply)
-				if ok && reply.Err != ErrWrongLeader {
-					kv.groupLeaderMap.setLeaderOfGroup(gid, si)
-					return &reply
+				reply := r.reply.(*GetShardsReply)
+				if reply.Err == ErrWrongLeader {
+					continue
 				}
 			default:
-				panic(fmt.Sprintf("unknown method %s", method))
+				reply := r.reply.(*Reply)
+				if reply.Err == ErrWrongLeader {
+					continue
+				}
 			}
+			goto End
+		case <-t.C:
+			// timeout
+			t.Reset(timeout)
+		}
+	}
 
+End:
+	kv.groupLeaderMap.put(gid, r.serverID)
+	return r.reply
+}
+
+// func (kv *ShardKV) syncConfig(config *shardctrler.Config) Err {
+// 	args := SetConfigArgs{
+// 		Config:   config.Clone(),
+// 		ClientId: kv.clientId,
+// 		SeqNum:   atomic.AddInt64(&kv.seqNum, 1),
+// 	}
+// 	Debug(ConfigEvent, "G%d S%d syncConfig, old config=%+v, new config=%+v",
+// 		kv.gid, kv.me, kv.config, config)
+// 	return kv.operate(SET_CONFIG, args.ClientId, args.SeqNum, args)
+
+// }
+
+// func (kv *ShardKV) putShardsToSelf(args *PutShardsArgs) Err {
+
+// 	Debug(MigrationEvent, "G%d S%d syncShards before args=%+v, config=%+v", kv.gid, kv.me, args, kv.config)
+// 	err := kv.operate(PUT_SHARDS, args.ClientId, args.SeqNum, *args)
+// 	Debug(MigrationEvent, "G%d S%d syncShards after args=%+v, err=%v", kv.gid, kv.me, args, err)
+// 	return err
+// }
+
+func (kv *ShardKV) pollConfig() {
+	// var config shardctrler.Config
+	for !kv.Killed() {
+		if _, isLeader := kv.raft.GetState(); isLeader {
+
+			kv.changeConfig()
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
 }
 
-func (kv *ShardKV) callGetShards(gid int, servers []string, args *GetShardsArgs) map[int]map[string]string {
+func (kv *ShardKV) changeConfig() {
 
-	Debug(MigrationEvent, "G%d S%d callGetShards gid=%d, args=%+v", kv.gid, kv.me, gid, args)
-	reply := kv.callOtherGroup("ShardKV.GetShards", gid, servers, args).(*GetShardsReply)
-	return reply.Shards
-}
+	oldConfig := kv.getConfig()
+	newConfig := kv.ctrlClerk.Query(oldConfig.Num + 1)
+	// Debug(ConfigEvent, "G%d S%d 1changeConfig, oldConfig=%+v, newConfig=%+v", kv.gid, kv.me, oldConfig, newConfig)
+	if newConfig.Num == oldConfig.Num {
+		return
+	}
+	if !kv.configInPrecessingMap.put(newConfig.Num) {
+		return
+	}
+	Assert(newConfig.Num > oldConfig.Num, "newConfig.Num=%d, oldConfig.Num=%d", newConfig.Num, oldConfig.Num)
+	Debug(ConfigEvent, "G%d S%d changeConfig, oldConfig=%+v, newConfig=%+v", kv.gid, kv.me, oldConfig, newConfig)
+	if oldConfig.Num > 0 {
+		kv.migration(&oldConfig, &newConfig)
+	}
 
-func (kv *ShardKV) callPutShards(gid int, servers []string, shards map[int]map[string]string) {
-	args := PutShardsArgs{
-		Shards:   shards,
+	setConfigArgs := SetConfigArgs{
+		Config:   newConfig,
 		ClientId: kv.clientId,
 		SeqNum:   atomic.AddInt64(&kv.seqNum, 1),
 	}
-	kv.callOtherGroup("ShardKV.PutShards", gid, servers, &args)
-}
-
-func (kv *ShardKV) syncConfig(config *shardctrler.Config) Err {
-	args := SetConfigArgs{
-		Config:   config.Clone(),
-		ClientId: kv.clientId,
-		SeqNum:   atomic.AddInt64(&kv.seqNum, 1),
-	}
-	Debug(ConfigEvent, "G%d S%d syncConfig, old config=%+v, new config=%+v",
-		kv.gid, kv.me, kv.config, config)
-	return kv.operate(SYNC_CONFIG, args.ClientId, args.SeqNum, args)
-
-}
-
-func (kv *ShardKV) syncShards(shards map[int]map[string]string) Err {
-	args := PutShardsArgs{
-		Shards:   shards,
-		ClientId: kv.clientId,
-		SeqNum:   atomic.AddInt64(&kv.seqNum, 1),
-	}
-	Debug(MigrationEvent, "G%d S%d syncShards before args=%+v, config=%+v", kv.gid, kv.me, args, kv.config)
-	err := kv.operate(PUT_SHARDS, args.ClientId, args.SeqNum, args)
-	Debug(MigrationEvent, "G%d S%d syncShards after args=%+v, err=%v", kv.gid, kv.me, args, err)
-	return err
+	kv.callSetConfigToGroup(kv.gid, oldConfig.Groups[kv.gid], &setConfigArgs)
 }
 
 func contains(arr []int, o int) bool {
@@ -526,85 +609,67 @@ func contains(arr []int, o int) bool {
 	return false
 }
 
-func (kv *ShardKV) pollConfig() {
-	for !kv.Killed() {
-		if !kv.isRestoreCompleted() {
-			kv.waitUntilRestoreCompleted()
+func (kv *ShardKV) migration(oldConfig, newConfig *shardctrler.Config) {
+	groupShardsMap := kv.getMigrationFromGroupShardsMap(oldConfig, newConfig)
+	for gid, shards := range groupShardsMap {
+		getShardsArgs := GetShardsArgs{
+			ConfigNum: newConfig.Num,
+			Shards:    shards,
+			ClientId:  kv.clientId,
+			SeqNum:    atomic.AddInt64(&kv.seqNum, 1),
 		}
-		if _, isLeader := kv.raft.GetState(); isLeader {
-			kv.changeConfig(kv.ctrlClerk.Query(-1))
-			time.Sleep(10000 * time.Millisecond)
+		getShardsReply := kv.callGetShardsFromGroup(gid, oldConfig.Groups[gid], &getShardsArgs)
+		putShardsArgs := PutShardsArgs{
+			Shards:          getShardsReply.Shards,
+			ClientSeqNumMap: getShardsReply.ClientSeqNumMap,
+			ClientId:        kv.clientId,
+			SeqNum:          atomic.AddInt64(&kv.seqNum, 1),
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		kv.callPutShardsToGroup(kv.gid, oldConfig.Groups[kv.gid], &putShardsArgs)
 
-}
-
-func (kv *ShardKV) changeConfig(newConfig shardctrler.Config) Err {
-
-	oldConfig := kv.getConfig()
-	if newConfig.Num > oldConfig.Num {
-		Debug(ConfigEvent, "G%d S%d changeConfig, oldConfig=%+v, newConfig=%+v", kv.gid, kv.me, oldConfig, newConfig)
-		if oldConfig.Num == 0 {
-			return kv.syncConfig(&newConfig)
-		} else {
-			oldShards := oldConfig.GetGroupShardsMap()[kv.gid]
-			newShards := newConfig.GetGroupShardsMap()[kv.gid]
-			var migrationShards []int
-			for _, newSd := range newShards {
-				if !contains(oldShards, newSd) {
-					migrationShards = append(migrationShards, newSd)
-				}
-			}
-
-			migrationGroupShardsMap := make(map[int][]int)
-			for _, shard := range migrationShards {
-				gid := oldConfig.Shards[shard]
-				Assert(gid != kv.gid, "gid %d == kv.gid %d", gid, kv.gid)
-				if gid != 0 {
-					migrationGroupShardsMap[gid] = append(migrationGroupShardsMap[gid], shard)
-				}
-			}
-			Debug(ConfigEvent, "G%d S%d migrationGroupShardsMap = %+v", kv.gid, kv.me, migrationGroupShardsMap)
-			for gid, shards := range migrationGroupShardsMap {
-				args := GetShardsArgs{
-					Config:   newConfig,
-					Shards:   shards,
-					ClientId: kv.clientId,
-					SeqNum:   atomic.AddInt64(&kv.seqNum, 1),
-				}
-				shardsData := kv.callGetShards(gid, oldConfig.Groups[gid], &args)
-				err := kv.syncShards(shardsData)
-				if err != OK {
-					return err
-				}
-			}
-
-			return kv.syncConfig(&newConfig)
-		}
-	}
-	return OK
-}
-
-func (kv *ShardKV) run() {
-	const timeout = 1000 * time.Millisecond
-	timer := time.NewTimer(timeout)
-	for !kv.Killed() {
-		// Debug(InfoEvent, "=====run")
-		select {
-		case msg := <-kv.applyCh:
-			timer.Reset(timeout)
-			kv.apply(msg)
-		case <-timer.C:
-			_, isLeader := kv.raft.GetState()
-			// Debug(ConfigEvent, "G%d S%d isLeader=%v=====run timeout", kv.gid, kv.me, isLeader)
-			if isLeader {
-				kv.changeConfig(kv.ctrlClerk.Query(-1))
-			}
-			timer.Reset(timeout)
-		}
 	}
 }
+
+func (kv *ShardKV) getMigrationFromGroupShardsMap(oldConfig, newConfig *shardctrler.Config) map[int][]int {
+	oldShards := oldConfig.GetGroupShardsMap()[kv.gid]
+	newShards := newConfig.GetGroupShardsMap()[kv.gid]
+	var migrationShards []int
+	for _, newSd := range newShards {
+		if !contains(oldShards, newSd) {
+			migrationShards = append(migrationShards, newSd)
+		}
+	}
+
+	migrationFromGroupShardsMap := make(map[int][]int)
+	for _, shard := range migrationShards {
+		gid := oldConfig.Shards[shard]
+		Assert(gid != kv.gid, "gid %d == kv.gid %d", gid, kv.gid)
+		if gid != 0 {
+			migrationFromGroupShardsMap[gid] = append(migrationFromGroupShardsMap[gid], shard)
+		}
+	}
+	return migrationFromGroupShardsMap
+}
+
+// func (kv *ShardKV) run() {
+// 	const timeout = 1000 * time.Millisecond
+// 	timer := time.NewTimer(timeout)
+// 	for !kv.Killed() {
+// 		// Debug(InfoEvent, "=====run")
+// 		select {
+// 		case msg := <-kv.applyCh:
+// 			timer.Reset(timeout)
+// 			kv.apply(msg)
+// 		case <-timer.C:
+// 			_, isLeader := kv.raft.GetState()
+// 			// Debug(ConfigEvent, "G%d S%d isLeader=%v=====run timeout", kv.gid, kv.me, isLeader)
+// 			if isLeader {
+// 				kv.changeConfig(kv.ctrlClerk.Query(-1))
+// 			}
+// 			timer.Reset(timeout)
+// 		}
+// 	}
+// }
 
 // the tester calls Kill() when a ShardKV instance won't
 // be needed again. you are not required to do anything
@@ -613,7 +678,7 @@ func (kv *ShardKV) run() {
 func (kv *ShardKV) Kill() {
 	kv.raft.Kill()
 	// Your code here, if desired.
-	kv.killChan <- true
+	// kv.killChan <- true
 	Debug(InfoEvent, "G%d S%d killed", kv.gid, kv.me)
 }
 
@@ -667,18 +732,20 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.raft = raft.Make(servers, me, persister, kv.applyCh)
 	// Your initialization code here.
+	// Use something like this to talk to the shardctrler:
+	kv.servers = servers
+	kv.ctrlClerk = shardctrler.MakeClerk(kv.ctrlers)
 	kv.persister = persister
 	kv.clientId = nrand()
 	kv.cond = sync.NewCond(&kv.mu)
 	kv.initStore()
-	kv.killChan = make(chan bool, 1)
-	// kv.restoreCompleted = true
+	kv.configInPrecessingMap.init()
+	// kv.killChan = make(chan bool, 1)
 
 	kv.clientStatusMap.init()
 	kv.groupLeaderMap.init()
+	kv.groupLeaderMap.put(kv.gid, kv.me)
 
-	// Use something like this to talk to the shardctrler:
-	kv.ctrlClerk = shardctrler.MakeClerk(kv.ctrlers)
 	go kv.applier()
 	go kv.pollConfig()
 

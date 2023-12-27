@@ -21,12 +21,12 @@ const (
 )
 
 const (
-	PUT         = "Put"
-	APPEND      = "Append"
-	GET         = "Get"
-	SYNC_CONFIG = "SyncConfig"
-	GET_SHARDS  = "GetShards"
-	PUT_SHARDS  = "PutShards"
+	PUT        = "Put"
+	APPEND     = "Append"
+	GET        = "Get"
+	SET_CONFIG = "SetConfig"
+	GET_SHARDS = "GetShards"
+	PUT_SHARDS = "PutShards"
 	// SYNC_SHARDS = "SyncShards"
 )
 
@@ -43,7 +43,7 @@ type PutAppendArgs struct {
 	ClientId int64
 }
 
-type PutAppendReply struct {
+type Reply struct {
 	Err Err
 }
 
@@ -60,33 +60,27 @@ type GetReply struct {
 }
 
 type GetShardsArgs struct {
-	Config   shardctrler.Config
-	Shards   []int
-	SeqNum   int64
-	ClientId int64
+	ConfigNum int
+	Shards    []int
+	SeqNum    int64
+	ClientId  int64
 }
 
 type GetShardsReply struct {
-	Err    Err
-	Shards map[int]map[string]string
+	Err             Err
+	Shards          map[int]map[string]string
+	ClientSeqNumMap map[int64]int64
 }
 
 type PutShardsArgs struct {
-	Shards   map[int]map[string]string
-	SeqNum   int64
-	ClientId int64
-}
-
-type PutShardsReply struct {
-	Err Err
+	Shards          map[int]map[string]string
+	ClientSeqNumMap map[int64]int64
+	SeqNum          int64
+	ClientId        int64
 }
 
 type SetConfigArgs struct {
 	Config   shardctrler.Config
 	SeqNum   int64
 	ClientId int64
-}
-
-type SetConfigReply struct {
-	Err Err
 }

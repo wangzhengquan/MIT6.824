@@ -38,6 +38,27 @@ func nrand() int64 {
 	return x
 }
 
+type GroupLeaderMap struct {
+	mu      sync.RWMutex
+	entries map[int]int
+}
+
+func (groups *GroupLeaderMap) init() {
+	groups.entries = map[int]int{}
+}
+
+func (groups *GroupLeaderMap) get(gid int) int {
+	groups.mu.RLock()
+	defer groups.mu.RUnlock()
+	return groups.entries[gid]
+}
+
+func (groups *GroupLeaderMap) put(gid, leader int) {
+	groups.mu.Lock()
+	defer groups.mu.Unlock()
+	groups.entries[gid] = leader
+}
+
 type Clerk struct {
 	sm       *shardctrler.Clerk
 	config   shardctrler.Config
@@ -81,27 +102,15 @@ func (ck *Clerk) Get(key string) string {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
-			// try each server for the shard.
-			leaderId := ck.groupLeaderMap.getLeaderOfGroup(gid)
-			for off := 0; off < len(servers); off++ {
-				si := (leaderId + off) % len(servers)
-				srv := ck.make_end(servers[si])
-				// Debug(GetEvent, "G%d S%d client call get", gid, si)
-				var reply GetReply
-				if srv.Call("ShardKV.Get", &args, &reply) {
-					if reply.Err == OK || reply.Err == ErrNoKey {
-						ck.groupLeaderMap.setLeaderOfGroup(gid, si)
-						return reply.Value
-					}
-					if reply.Err == ErrWrongGroup {
-						ck.groupLeaderMap.setLeaderOfGroup(gid, si)
-						break
-					}
+			reply := ck.callOtherGroup("ShardKV.Get", gid, servers, &args)
+			if reply != nil {
+				getReply := reply.(*GetReply)
+				if getReply.Err == OK {
+					return getReply.Value
 				}
-				// ... not ok, or ErrWrongLeader
 			}
 		}
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 	}
@@ -124,25 +133,13 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
-			leaderId := ck.groupLeaderMap.getLeaderOfGroup(gid)
-			for off := 0; off < len(servers); off++ {
-				si := (leaderId + off) % len(servers)
-				srv := ck.make_end(servers[si])
-				// Debug(GetEvent, "G%d S%d client call put", gid, si)
-				var reply PutAppendReply
-				if srv.Call("ShardKV.PutAppend", &args, &reply) {
-					if reply.Err == OK {
-						ck.groupLeaderMap.setLeaderOfGroup(gid, si)
-						return
-					}
-					if reply.Err == ErrWrongGroup {
-						ck.groupLeaderMap.setLeaderOfGroup(gid, si)
-						break
-					}
-				}
+			reply := ck.callOtherGroup("ShardKV.PutAppend", gid, servers, &args)
+			if reply != nil && reply.(*Reply).Err == OK {
+				return
 			}
+
 		}
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		// ask controler for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 	}
@@ -155,23 +152,66 @@ func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, APPEND)
 }
 
-type GroupLeaderMap struct {
-	mu   sync.RWMutex
-	data map[int]int
-}
+func (ck *Clerk) callOtherGroup(method string, gid int, servers []string, args interface{}) interface{} {
+	type result struct {
+		serverID int
+		reply    interface{}
+	}
 
-func (groups *GroupLeaderMap) init() {
-	groups.data = map[int]int{}
-}
+	const timeout = 100 * time.Millisecond
+	t := time.NewTimer(timeout)
+	defer t.Stop()
 
-func (groups *GroupLeaderMap) getLeaderOfGroup(gid int) int {
-	groups.mu.RLock()
-	defer groups.mu.RUnlock()
-	return groups.data[gid]
-}
+	doneCh := make(chan result, len(servers))
+	leaderId := ck.groupLeaderMap.get(gid)
+	var r result
 
-func (groups *GroupLeaderMap) setLeaderOfGroup(gid, leader int) {
-	groups.mu.Lock()
-	defer groups.mu.Unlock()
-	groups.data[gid] = leader
+	for off := 0; off < len(servers); off++ {
+		si := (leaderId + off) % len(servers)
+		srv := ck.make_end(servers[si])
+		var reply interface{}
+		switch method {
+		case "ShardKV.GetShards":
+			reply = &GetShardsReply{}
+		case "ShardKV.Get":
+			reply = &GetReply{}
+		default:
+			reply = &Reply{}
+		}
+
+		go func() {
+			if srv.Call(method, args, reply) {
+				doneCh <- result{si, reply}
+			}
+		}()
+
+		select {
+		case r = <-doneCh:
+			switch method {
+			case "ShardKV.GetShards":
+				reply := r.reply.(*GetShardsReply)
+				if reply.Err == ErrWrongLeader {
+					continue
+				}
+			case "ShardKV.Get":
+				reply := r.reply.(*GetReply)
+				if reply.Err == ErrWrongLeader {
+					continue
+				}
+			default:
+				reply := r.reply.(*Reply)
+				if reply.Err == ErrWrongLeader {
+					continue
+				}
+			}
+			goto End
+		case <-t.C:
+			// timeout
+			t.Reset(timeout)
+		}
+	}
+
+End:
+	ck.groupLeaderMap.put(gid, r.serverID)
+	return r.reply
 }

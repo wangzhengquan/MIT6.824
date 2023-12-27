@@ -337,7 +337,7 @@ func (cfg *config) leave(gi int) {
 func (cfg *config) leavem(gis []int) {
 	gids := make([]int, 0, len(gis))
 	for _, g := range gis {
-		Debug(TraceEvent, "leave %d", g)
+		Debug(TraceEvent, "=== leave %d", g)
 		gids = append(gids, cfg.groups[g].gid)
 	}
 	cfg.mck.Leave(gids)
@@ -367,7 +367,7 @@ func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config
 	}
 	cfg.mck = cfg.shardclerk()
 
-	cfg.ngroups = 1
+	cfg.ngroups = 3
 	cfg.groups = make([]*group, cfg.ngroups)
 	cfg.n = n
 	for gi := 0; gi < cfg.ngroups; gi++ {

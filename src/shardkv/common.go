@@ -21,13 +21,13 @@ const (
 )
 
 const (
-	PUT        = "Put"
-	APPEND     = "Append"
-	GET        = "Get"
-	SET_CONFIG = "SetConfig"
-	GET_SHARDS = "GetShards"
-	PUT_SHARDS = "PutShards"
-	// SYNC_SHARDS = "SyncShards"
+	PUT           = "Put"
+	APPEND        = "Append"
+	GET           = "Get"
+	SET_CONFIG    = "SetConfig"
+	GET_SHARDS    = "GetShards"
+	PUT_SHARDS    = "PutShards"
+	DELETE_SHARDS = "DeleteShards"
 )
 
 // Put or Append
@@ -83,4 +83,11 @@ type SetConfigArgs struct {
 	Config   shardctrler.Config
 	SeqNum   int64
 	ClientId int64
+}
+
+type DeleteShardsArgs struct {
+	ConfigNum int
+	Shards    []int
+	SeqNum    int64
+	ClientId  int64
 }

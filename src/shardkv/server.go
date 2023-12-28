@@ -127,10 +127,11 @@ type ShardKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	mu     sync.RWMutex
-	cond   *sync.Cond
-	config shardctrler.Config
-	store  [shardctrler.NShards]map[string]string
+	mu         sync.RWMutex
+	cond       *sync.Cond
+	config     shardctrler.Config
+	nextConfig shardctrler.Config
+	store      [shardctrler.NShards]map[string]string
 
 	ctrlClerk *shardctrler.Clerk
 	persister *raft.Persister
@@ -230,6 +231,18 @@ func (kv *ShardKV) getShards(shards []int) map[int]map[string]string {
 	return data
 }
 
+func (kv *ShardKV) deleteShards(configNum int, shards []int) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if kv.config.Num == configNum {
+		for _, shard := range shards {
+			// Assert(kv.config.Shards[shard] != kv.gid, "G%d S%d getShards shard=%d, config=%+v", kv.gid, kv.me, shard, kv.config)
+			kv.store[shard] = make(map[string]string)
+		}
+	}
+
+}
+
 // ===================== store end =======================
 
 func (kv *ShardKV) getConfig() shardctrler.Config {
@@ -315,6 +328,10 @@ func (kv *ShardKV) PutShards(args *PutShardsArgs, reply *Reply) {
 	reply.Err = kv.operate(PUT_SHARDS, args.ClientId, args.SeqNum, *args)
 }
 
+func (kv *ShardKV) DeleteShards(args *DeleteShardsArgs, reply *Reply) {
+	reply.Err = kv.operate(DELETE_SHARDS, args.ClientId, args.SeqNum, *args)
+}
+
 func (kv *ShardKV) applier() {
 	for !kv.Killed() {
 		msg := <-kv.applyCh
@@ -390,6 +407,14 @@ func (kv *ShardKV) applyOp(op Op) {
 			kv.clientStatusMap.putClientSeqNumMap(args.ClientSeqNumMap)
 			clientStatus.updateSeqNum(args.SeqNum)
 		}
+	case DELETE_SHARDS:
+		args := op.Args.(DeleteShardsArgs)
+		Debug(MigrationEvent, "G%d S%d apply DELETE_SHARDS : args=%+v, config=%+v\n", kv.gid, kv.me, args, kv.config)
+		clientStatus := kv.clientStatusMap.get(args.ClientId)
+		if !clientStatus.done(args.SeqNum) {
+			kv.deleteShards(args.ConfigNum, args.Shards)
+			clientStatus.updateSeqNum(args.SeqNum)
+		}
 
 	case SET_CONFIG:
 		args := op.Args.(SetConfigArgs)
@@ -463,6 +488,12 @@ func (kv *ShardKV) snapshot(logIndex int) {
 func (kv *ShardKV) callGetShardsFromGroup(gid int, servers []string, args *GetShardsArgs) *GetShardsReply {
 	Debug(MigrationEvent, "G%d S%d callGetShardsFromGroup gid=%d, args=%+v", kv.gid, kv.me, gid, args)
 	reply := kv.callOtherGroup("ShardKV.GetShards", gid, servers, args).(*GetShardsReply)
+	return reply
+}
+
+func (kv *ShardKV) callDeleteShardsFromGroup(gid int, servers []string, args *DeleteShardsArgs) *Reply {
+	Debug(MigrationEvent, "G%d S%d callGetShardsFromGroup gid=%d, args=%+v", kv.gid, kv.me, gid, args)
+	reply := kv.callOtherGroup("ShardKV.DeleteShards", gid, servers, args).(*Reply)
 	return reply
 }
 
@@ -578,7 +609,10 @@ func (kv *ShardKV) pollConfig() {
 func (kv *ShardKV) changeConfig() {
 
 	oldConfig := kv.getConfig()
-	newConfig := kv.ctrlClerk.Query(oldConfig.Num + 1)
+	if kv.nextConfig.Num <= oldConfig.Num {
+		kv.nextConfig = kv.ctrlClerk.Query(oldConfig.Num + 1)
+	}
+	newConfig := kv.nextConfig
 	// Debug(ConfigEvent, "G%d S%d 1changeConfig, oldConfig=%+v, newConfig=%+v", kv.gid, kv.me, oldConfig, newConfig)
 	if newConfig.Num == oldConfig.Num {
 		return
@@ -598,6 +632,7 @@ func (kv *ShardKV) changeConfig() {
 		SeqNum:   atomic.AddInt64(&kv.seqNum, 1),
 	}
 	kv.callSetConfigToGroup(kv.gid, oldConfig.Groups[kv.gid], &setConfigArgs)
+
 }
 
 func contains(arr []int, o int) bool {
@@ -625,7 +660,14 @@ func (kv *ShardKV) migration(oldConfig, newConfig *shardctrler.Config) {
 			ClientId:        kv.clientId,
 			SeqNum:          atomic.AddInt64(&kv.seqNum, 1),
 		}
-		kv.callPutShardsToGroup(kv.gid, oldConfig.Groups[kv.gid], &putShardsArgs)
+		kv.callPutShardsToGroup(kv.gid, newConfig.Groups[kv.gid], &putShardsArgs)
+		deleteShardsArgs := DeleteShardsArgs{
+			ConfigNum: newConfig.Num,
+			Shards:    shards,
+			ClientId:  kv.clientId,
+			SeqNum:    atomic.AddInt64(&kv.seqNum, 1),
+		}
+		kv.callDeleteShardsFromGroup(gid, oldConfig.Groups[gid], &deleteShardsArgs)
 
 	}
 }
@@ -720,6 +762,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	labgob.Register(GetArgs{})
 	labgob.Register(GetShardsArgs{})
 	labgob.Register(PutShardsArgs{})
+	labgob.Register(DeleteShardsArgs{})
 	labgob.Register(SetConfigArgs{})
 	labgob.Register(shardctrler.Config{})
 

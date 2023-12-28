@@ -217,6 +217,7 @@ func (kv *ShardKV) putShards(shards map[int]map[string]string) {
 		for k, v := range data {
 			kv.store[shard][k] = v
 		}
+		kv.config.Shards[shard] = kv.gid
 	}
 }
 
@@ -574,26 +575,6 @@ End:
 	return r.reply
 }
 
-// func (kv *ShardKV) syncConfig(config *shardctrler.Config) Err {
-// 	args := SetConfigArgs{
-// 		Config:   config.Clone(),
-// 		ClientId: kv.clientId,
-// 		SeqNum:   atomic.AddInt64(&kv.seqNum, 1),
-// 	}
-// 	Debug(ConfigEvent, "G%d S%d syncConfig, old config=%+v, new config=%+v",
-// 		kv.gid, kv.me, kv.config, config)
-// 	return kv.operate(SET_CONFIG, args.ClientId, args.SeqNum, args)
-
-// }
-
-// func (kv *ShardKV) putShardsToSelf(args *PutShardsArgs) Err {
-
-// 	Debug(MigrationEvent, "G%d S%d syncShards before args=%+v, config=%+v", kv.gid, kv.me, args, kv.config)
-// 	err := kv.operate(PUT_SHARDS, args.ClientId, args.SeqNum, *args)
-// 	Debug(MigrationEvent, "G%d S%d syncShards after args=%+v, err=%v", kv.gid, kv.me, args, err)
-// 	return err
-// }
-
 func (kv *ShardKV) pollConfig() {
 	// var config shardctrler.Config
 	for !kv.Killed() {
@@ -607,7 +588,6 @@ func (kv *ShardKV) pollConfig() {
 }
 
 func (kv *ShardKV) changeConfig() {
-
 	oldConfig := kv.getConfig()
 	if kv.nextConfig.Num <= oldConfig.Num {
 		kv.nextConfig = kv.ctrlClerk.Query(oldConfig.Num + 1)
@@ -646,29 +626,39 @@ func contains(arr []int, o int) bool {
 
 func (kv *ShardKV) migration(oldConfig, newConfig *shardctrler.Config) {
 	groupShardsMap := kv.getMigrationFromGroupShardsMap(oldConfig, newConfig)
+	if len(groupShardsMap) < 0 {
+		return
+	}
+	ch := make(chan bool, len(groupShardsMap))
 	for gid, shards := range groupShardsMap {
-		getShardsArgs := GetShardsArgs{
-			ConfigNum: newConfig.Num,
-			Shards:    shards,
-			ClientId:  kv.clientId,
-			SeqNum:    atomic.AddInt64(&kv.seqNum, 1),
-		}
-		getShardsReply := kv.callGetShardsFromGroup(gid, oldConfig.Groups[gid], &getShardsArgs)
-		putShardsArgs := PutShardsArgs{
-			Shards:          getShardsReply.Shards,
-			ClientSeqNumMap: getShardsReply.ClientSeqNumMap,
-			ClientId:        kv.clientId,
-			SeqNum:          atomic.AddInt64(&kv.seqNum, 1),
-		}
-		kv.callPutShardsToGroup(kv.gid, newConfig.Groups[kv.gid], &putShardsArgs)
-		deleteShardsArgs := DeleteShardsArgs{
-			ConfigNum: newConfig.Num,
-			Shards:    shards,
-			ClientId:  kv.clientId,
-			SeqNum:    atomic.AddInt64(&kv.seqNum, 1),
-		}
-		kv.callDeleteShardsFromGroup(gid, oldConfig.Groups[gid], &deleteShardsArgs)
+		go func(gid int, shards []int) {
+			defer func() { ch <- true }()
+			getShardsArgs := GetShardsArgs{
+				ConfigNum: newConfig.Num,
+				Shards:    shards,
+				ClientId:  kv.clientId,
+				SeqNum:    atomic.AddInt64(&kv.seqNum, 1),
+			}
+			getShardsReply := kv.callGetShardsFromGroup(gid, oldConfig.Groups[gid], &getShardsArgs)
+			putShardsArgs := PutShardsArgs{
+				Shards:          getShardsReply.Shards,
+				ClientSeqNumMap: getShardsReply.ClientSeqNumMap,
+				ClientId:        kv.clientId,
+				SeqNum:          atomic.AddInt64(&kv.seqNum, 1),
+			}
+			kv.callPutShardsToGroup(kv.gid, newConfig.Groups[kv.gid], &putShardsArgs)
+			deleteShardsArgs := DeleteShardsArgs{
+				ConfigNum: newConfig.Num,
+				Shards:    shards,
+				ClientId:  kv.clientId,
+				SeqNum:    atomic.AddInt64(&kv.seqNum, 1),
+			}
+			kv.callDeleteShardsFromGroup(gid, oldConfig.Groups[gid], &deleteShardsArgs)
+		}(gid, shards)
 
+	}
+	for i := 0; i < len(groupShardsMap); i++ {
+		<-ch
 	}
 }
 

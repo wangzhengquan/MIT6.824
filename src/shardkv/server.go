@@ -236,13 +236,15 @@ func (kv *ShardKV) getShards(shards []int) map[int]map[string]string {
 func (kv *ShardKV) deleteShards(configNum int, shards []int) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	if kv.config.Num == configNum {
-		for _, shard := range shards {
-			// Assert(kv.config.Shards[shard] != kv.gid, "G%d S%d getShards shard=%d, config=%+v", kv.gid, kv.me, shard, kv.config)
+	for _, shard := range shards {
+		// The condition 'kv.nextConfig.Shards[shard] != kv.gid' serves to prevent a situation where,
+		// when G1 leaves and moves shards to G2, then rejoins,
+		// some of G2's delete requests, which have experienced latency, arrive while G1 is in the process of migrating data from another group.
+		// In this scenario, the shard might be deleted since the migration is still in progress and the new configuration hasn't been updated."
+		if kv.config.Shards[shard] != kv.gid && kv.nextConfig.Shards[shard] != kv.gid {
 			kv.store[shard] = make(map[string]string)
 		}
 	}
-
 }
 
 // ===================== store end =======================

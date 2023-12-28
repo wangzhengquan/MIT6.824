@@ -211,7 +211,10 @@ func (kv *ShardKV) putShards(shards map[int]map[string]string) {
 	defer kv.mu.Unlock()
 
 	for shard, data := range shards {
-		Assert(kv.config.Shards[shard] != kv.gid, "G%d S%d putShards shard=%d, config=%+v", kv.gid, kv.me, shard, kv.config)
+		if kv.config.Shards[shard] == kv.gid {
+			// This condition may be true if the group was shut down and then restarted while the migration was still in progress."
+			continue
+		}
 		kv.store[shard] = make(map[string]string)
 		for k, v := range data {
 			kv.store[shard][k] = v
@@ -225,7 +228,6 @@ func (kv *ShardKV) getShards(shards []int) map[int]map[string]string {
 	defer kv.mu.RUnlock()
 	data := map[int]map[string]string{}
 	for _, shard := range shards {
-		// Assert(kv.config.Shards[shard] != kv.gid, "G%d S%d getShards shard=%d, config=%+v", kv.gid, kv.me, shard, kv.config)
 		data[shard] = kv.store[shard]
 	}
 	return data

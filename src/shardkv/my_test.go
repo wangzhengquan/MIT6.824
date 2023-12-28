@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -51,7 +52,7 @@ func Disalbed_Test1(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestJoinLeav2(t *testing.T) {
+func Disalbed_TestJoinLeav2(t *testing.T) {
 	fmt.Printf("Test: join, and leave 2...\n")
 
 	cfg := make_config(t, 3, false, -1)
@@ -116,5 +117,71 @@ func TestJoinLeav2(t *testing.T) {
 		check(t, ck, ka[i], va[i])
 	}
 
+	fmt.Printf("  ... Passed\n")
+}
+
+func Disalbed_TestMyUnreliable(t *testing.T) {
+	fmt.Printf("Test: my unreliable 2...\n")
+
+	cfg := make_config(t, 3, false, 100)
+	defer cfg.cleanup()
+
+	ck := cfg.makeClient()
+
+	cfg.join(0)
+
+	n := 10
+	ka := make([]string, n)
+	va := make([]string, n)
+	for i := 0; i < n; i++ {
+		ka[i] = strconv.Itoa(i) // ensure multiple shards
+		va[i] = randstring(5)
+		ck.Put(ka[i], va[i])
+	}
+
+	var done int32
+	ch := make(chan bool)
+
+	ff := func(i int) {
+		defer func() { ch <- true }()
+		ck1 := cfg.makeClient()
+		for atomic.LoadInt32(&done) == 0 {
+			x := randstring(5)
+			ck1.Append(ka[i], x)
+			va[i] += x
+		}
+	}
+
+	for i := 0; i < n; i++ {
+		go ff(i)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	cfg.join(1)
+	time.Sleep(500 * time.Millisecond)
+	cfg.join(2)
+	time.Sleep(500 * time.Millisecond)
+	cfg.leave(0)
+	time.Sleep(500 * time.Millisecond)
+	cfg.leave(1)
+	time.Sleep(500 * time.Millisecond)
+	cfg.join(1)
+	cfg.join(0)
+
+	log.Printf("=========Sleep")
+	time.Sleep(2 * time.Second)
+	log.Printf("=========Sleep end")
+
+	atomic.StoreInt32(&done, 1)
+	// cfg.net.Reliable(true)
+	for i := 0; i < n; i++ {
+		<-ch
+	}
+
+	log.Printf("=========Check")
+	for i := 0; i < n; i++ {
+		check(t, ck, ka[i], va[i])
+	}
+	log.Printf("=========Check end")
 	fmt.Printf("  ... Passed\n")
 }

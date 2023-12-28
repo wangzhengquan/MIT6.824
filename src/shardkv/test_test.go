@@ -16,6 +16,10 @@ import (
 
 const linearizabilityCheckTimeout = 1 * time.Second
 
+func init() {
+	debugInit()
+}
+
 func check(t *testing.T, ck *Clerk, key string, value string) {
 	v := ck.Get(key)
 	if v != value {
@@ -621,7 +625,6 @@ func TestUnreliable2(t *testing.T) {
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
 	}
-
 	fmt.Printf("  ... Passed\n")
 }
 

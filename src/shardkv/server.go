@@ -17,7 +17,6 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters, otherwise RPC will break.
 	Type string
-	Ch   chan (Err)
 	Args interface{}
 }
 
@@ -269,19 +268,14 @@ func (kv *ShardKV) operate(opType string, clientId int64, seqNum int64, args int
 		Debug(InfoEvent, "G%d S%d %s has been done. args= %+v", kv.gid, kv.me, opType, args)
 		return OK
 	}
-	op := Op{Type: opType, Ch: make(chan (Err), 1), Args: args}
+
+	op := Op{Type: opType, Args: args}
 	if _, _, ok := kv.raft.Start(op); ok {
 		Debug(InfoEvent, "G%d S%d %s start args= %+v, config=%+v", kv.gid, kv.me, opType, args, kv.config)
 		for !clientStatus.done(seqNum) {
 			clientStatus.cond.Wait()
 		}
 		return OK
-		// select {
-		// case err := <-op.Ch:
-		// 	return err
-		// case <-time.After(2 * time.Second):
-		// 	Debug(InfoEvent, "G%d S%d %v timeout", kv.gid, kv.me, opType)
-		// }
 	}
 	Debug(InfoEvent, "G%d S%d %s ErrWrongLeader args= %+v, config=%+v", kv.gid, kv.me, opType, args, kv.config)
 	return ErrWrongLeader
@@ -609,24 +603,18 @@ func (kv *ShardKV) changeConfig() {
 
 }
 
-func contains(arr []int, o int) bool {
-	for _, v := range arr {
-		if v == o {
-			return true
-		}
-	}
-	return false
-}
-
 func (kv *ShardKV) migration(oldConfig, newConfig *shardctrler.Config) {
 	groupShardsMap := kv.getMigrationFromGroupShardsMap(oldConfig, newConfig)
 	if len(groupShardsMap) < 0 {
 		return
 	}
-	ch := make(chan bool, len(groupShardsMap))
+	type result struct {
+		gid   int
+		reply *GetShardsReply
+	}
+	ch1 := make(chan result)
 	for gid, shards := range groupShardsMap {
 		go func(gid int, shards []int) {
-			defer func() { ch <- true }()
 			getShardsArgs := GetShardsArgs{
 				ConfigNum: newConfig.Num,
 				Shards:    shards,
@@ -634,13 +622,23 @@ func (kv *ShardKV) migration(oldConfig, newConfig *shardctrler.Config) {
 				SeqNum:    atomic.AddInt64(&kv.seqNum, 1),
 			}
 			getShardsReply := kv.callGetShardsFromGroup(gid, oldConfig.Groups[gid], &getShardsArgs)
-			putShardsArgs := PutShardsArgs{
-				Shards:          getShardsReply.Shards,
-				ClientSeqNumMap: getShardsReply.ClientSeqNumMap,
-				ClientId:        kv.clientId,
-				SeqNum:          atomic.AddInt64(&kv.seqNum, 1),
-			}
-			kv.callPutShardsToGroup(kv.gid, newConfig.Groups[kv.gid], &putShardsArgs)
+			ch1 <- result{gid, getShardsReply}
+		}(gid, shards)
+
+	}
+
+	ch2 := make(chan bool)
+	for i := 0; i < len(groupShardsMap); i++ {
+		r := <-ch1
+		putShardsArgs := PutShardsArgs{
+			Shards:          r.reply.Shards,
+			ClientSeqNumMap: r.reply.ClientSeqNumMap,
+			ClientId:        kv.clientId,
+			SeqNum:          atomic.AddInt64(&kv.seqNum, 1),
+		}
+		kv.callPutShardsToGroup(kv.gid, newConfig.Groups[kv.gid], &putShardsArgs)
+
+		go func(gid int, shards []int) {
 			deleteShardsArgs := DeleteShardsArgs{
 				ConfigNum: newConfig.Num,
 				Shards:    shards,
@@ -648,11 +646,12 @@ func (kv *ShardKV) migration(oldConfig, newConfig *shardctrler.Config) {
 				SeqNum:    atomic.AddInt64(&kv.seqNum, 1),
 			}
 			kv.callDeleteShardsFromGroup(gid, oldConfig.Groups[gid], &deleteShardsArgs)
-		}(gid, shards)
-
+			ch2 <- true
+		}(r.gid, groupShardsMap[r.gid])
 	}
+
 	for i := 0; i < len(groupShardsMap); i++ {
-		<-ch
+		<-ch2
 	}
 }
 
@@ -675,6 +674,15 @@ func (kv *ShardKV) getMigrationFromGroupShardsMap(oldConfig, newConfig *shardctr
 		}
 	}
 	return migrationFromGroupShardsMap
+}
+
+func contains(arr []int, o int) bool {
+	for _, v := range arr {
+		if v == o {
+			return true
+		}
+	}
+	return false
 }
 
 // the tester calls Kill() when a ShardKV instance won't
@@ -747,7 +755,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.cond = sync.NewCond(&kv.mu)
 	kv.initStore()
 	kv.configInPrecessingMap.init()
-	// kv.killChan = make(chan bool, 1)
 
 	kv.clientStatusMap.init()
 	kv.groupLeaderMap.init()

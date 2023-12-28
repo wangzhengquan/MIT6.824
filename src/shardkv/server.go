@@ -367,7 +367,6 @@ func (kv *ShardKV) applyOp(op Op) {
 			if err != ErrWrongGroup {
 				clientStatus.updateSeqNum(args.SeqNum)
 			}
-
 		}
 	case APPEND:
 		args := op.Args.(PutAppendArgs)
@@ -480,10 +479,6 @@ func (kv *ShardKV) snapshot(logIndex int) {
 	e.Encode(kv.config)
 	e.Encode(kv.clientStatusMap.getClientSeqNumMap())
 	kv.raft.Snapshot(logIndex, w.Bytes())
-	go func() {
-		kv.raft.Snapshot(logIndex, w.Bytes())
-	}()
-
 }
 
 func (kv *ShardKV) callGetShardsFromGroup(gid int, servers []string, args *GetShardsArgs) *GetShardsReply {
@@ -579,7 +574,6 @@ func (kv *ShardKV) pollConfig() {
 	// var config shardctrler.Config
 	for !kv.Killed() {
 		if _, isLeader := kv.raft.GetState(); isLeader {
-
 			kv.changeConfig()
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -682,26 +676,6 @@ func (kv *ShardKV) getMigrationFromGroupShardsMap(oldConfig, newConfig *shardctr
 	}
 	return migrationFromGroupShardsMap
 }
-
-// func (kv *ShardKV) run() {
-// 	const timeout = 1000 * time.Millisecond
-// 	timer := time.NewTimer(timeout)
-// 	for !kv.Killed() {
-// 		// Debug(InfoEvent, "=====run")
-// 		select {
-// 		case msg := <-kv.applyCh:
-// 			timer.Reset(timeout)
-// 			kv.apply(msg)
-// 		case <-timer.C:
-// 			_, isLeader := kv.raft.GetState()
-// 			// Debug(ConfigEvent, "G%d S%d isLeader=%v=====run timeout", kv.gid, kv.me, isLeader)
-// 			if isLeader {
-// 				kv.changeConfig(kv.ctrlClerk.Query(-1))
-// 			}
-// 			timer.Reset(timeout)
-// 		}
-// 	}
-// }
 
 // the tester calls Kill() when a ShardKV instance won't
 // be needed again. you are not required to do anything

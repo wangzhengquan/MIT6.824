@@ -185,6 +185,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) applier() {
 	for m := range kv.applyCh {
 		// log.Printf("S%d applierSnap -> applyCh msg= %v\n", i, &m)
+
 		if m.SnapshotValid {
 			kv.applySnap(m.Snapshot, m.SnapshotIndex)
 		} else if m.CommandValid {
@@ -195,6 +196,7 @@ func (kv *KVServer) applier() {
 				kv.snapshot(m.CommandIndex)
 			}
 		}
+
 	}
 }
 
@@ -221,9 +223,6 @@ func (kv *KVServer) snapshot(logIndex int) {
 	e.Encode(kv.store.data)
 	e.Encode(kv.clientsSeqNum())
 	kv.rf.Snapshot(logIndex, w.Bytes())
-	go func() {
-		kv.rf.Snapshot(logIndex, w.Bytes())
-	}()
 
 }
 

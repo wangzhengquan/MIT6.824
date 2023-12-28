@@ -5,7 +5,6 @@ package raft
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if index <= rf.snapshotIndex {

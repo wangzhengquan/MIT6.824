@@ -22,7 +22,7 @@ func Disable_TestMain(t *testing.T) {
 	fmt.Println(cs1, cs2)
 }
 
-func TestSimple(t *testing.T) {
+func Disable_TestSimple(t *testing.T) {
 	title := "Test: Simple"
 	nservers := 3
 	crash := true

@@ -6,3 +6,4 @@ api.key
 *.m
 *.DS_Store
 *.log
+.obsidian/

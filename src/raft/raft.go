@@ -197,6 +197,7 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 		Command: command,
 		Term:    rf.currentTerm,
 	}
+	Debug(HeartbeatEvent, rf.me, "Start add a log=%+v\n", entry)
 	rf.log.append(entry)
 	index = rf.log.lastIndex()
 	rf.persistSate()

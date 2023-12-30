@@ -57,13 +57,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// reply.LeaderId = args.LeaderId // for debug
 
 	if args.Term < rf.currentTerm {
-		Debug(HeartbeatEvent, rf.me, "reject AppendEntries from %d, for args.term %d < current term %d\n",
+		Debug(HeartbeatEvent, rf.me, "reject AppendEntries from S%d, for args.term %d < current term %d\n",
 			args.LeaderId, args.Term, rf.currentTerm)
 		reply.Success = false
 		return
 	}
 
-	Debug(HeartbeatEvent, rf.me, "recieved AppendEntries from %d, args=%v\n",
+	Debug(HeartbeatEvent, rf.me, "recieved AppendEntries from S%d, args=%v\n",
 		args.LeaderId, args)
 
 	rf.resetElectionTimer()
@@ -75,7 +75,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// “PrevLogIndex log matched” check
 	if args.PrevLogIndex > rf.log.lastIndex() {
-		Debug(HeartbeatEvent, rf.me, "refuse AppendEntries request from %d for args.PrevLogIndex %d > rf.lastLogIndex %d \n",
+		Debug(HeartbeatEvent, rf.me, "refuse AppendEntries request from S%d for args.PrevLogIndex %d > rf.lastLogIndex %d \n",
 			args.LeaderId, args.PrevLogIndex, rf.log.lastIndex())
 		reply.ConflictTerm = rf.log.lastEntry().Term
 		reply.ConflictIndex = rf.log.lastIndex()
@@ -108,7 +108,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else if rf.log.entry(args.PrevLogIndex).Term != args.PrevLogTerm {
 		reply.ConflictTerm = rf.log.entry(args.PrevLogIndex).Term
 		reply.ConflictIndex = args.PrevLogIndex
-		Debug(HeartbeatEvent, rf.me, "refuse AppendEntries request from %d for rf.log[PrevLogIndex %d].Term %d != args.PrevLogTerm %d\n",
+		Debug(HeartbeatEvent, rf.me, "refuse AppendEntries request from S%d for rf.log[PrevLogIndex %d].Term %d != args.PrevLogTerm %d\n",
 			args.LeaderId, args.PrevLogIndex, reply.ConflictTerm, args.PrevLogTerm)
 		rf.log.cutOffTail(args.PrevLogIndex)
 		rf.persistSate()
@@ -117,9 +117,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// follower's log matches the leader’s log up to and including the args.prevLogIndex
 		oldLogLen := rf.log.length()
 		rf.log.place(args.PrevLogIndex+1, args.Entries...)
-
-		Debug(HeartbeatEvent, rf.me, "approve AppendEntries request from %d, old log=%d, new log=%d\n",
+		Debug(HeartbeatEvent, rf.me, "approve AppendEntries request from S%d, old log=%d, new log=%d\n",
 			args.LeaderId, oldLogLen, rf.log.length())
+
 		rf.persistSate()
 		// follower commit
 		rf.followerCommit(args.LeaderCommitIndex)
@@ -135,7 +135,7 @@ func (rf *Raft) followerCommit(leaderCommitIndex int) {
 		} else {
 			commitIndex = rf.log.lastIndex()
 		}
-		Debug(CommitEvent, rf.me, "follower commit, old commitIndex=%d, new commitIndex=%d\n",
+		Debug(CommitEvent, rf.me, "commit as follower, %d-%d\n",
 			rf.commitIndex, commitIndex)
 		rf.commitIndex = commitIndex
 		rf.applyCond.Broadcast()
@@ -205,7 +205,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	if ok := rf.peers[server].Call("Raft.AppendEntries", args, reply); ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		if args.Term != rf.currentTerm {
+		if args.Term != rf.currentTerm || rf.role != LEADER {
 			return
 		}
 		Debug(HeartbeatEvent, rf.me, "sendAppendEntries: reply from %d : reply=%+v, request args=%v, rf.currentTerm=%d \n",
@@ -219,8 +219,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 				rf.leaderCommit()
 			}
 			rf.nextIndex[server] = rf.matchIndex[server] + 1
-			Debug(HeartbeatEvent, rf.me, "rf.nextIndex[%d] advance, old=%d, new=%d\n",
-				server, oldNextIndex, rf.nextIndex[server])
+			Debug(HeartbeatEvent, rf.me, "advance nextIndex %d-->%d\n",
+				oldNextIndex, rf.nextIndex[server])
 		} else {
 			if reply.Term > rf.currentTerm {
 				rf.stepDown(reply.Term)
@@ -247,8 +247,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 					rf.nextIndex[server] = rf.matchIndex[server] + 1
 				}
 
-				Debug(HeartbeatEvent, rf.me, "sendAppendEntries reply, rf.nextIndex[%d] back up, old=%d, new=%d.\n",
-					server, oldNextIndex, rf.nextIndex[server])
+				Debug(HeartbeatEvent, rf.me, "backward nextIndex %d<--%d.\n",
+					rf.nextIndex[server], oldNextIndex)
 				Assert(rf.matchIndex[server] < rf.nextIndex[server],
 					"sendAppendEntries reply, rf.matchIndex[%d]=%d, rf.nextIndex=%d\n",
 					server, rf.matchIndex[server], rf.nextIndex[server])
@@ -316,8 +316,9 @@ func (rf *Raft) leaderCommit() {
 		return
 	}
 
-	matchIndex := rf.getSortedMatchIndex()
-	commitIndex := matchIndex[len(rf.matchIndex)/2]
+	serverMatchedIndex := rf.getSortedMatchIndex()
+	//  "(len(rf.matchIndex)+1)/2-1" is the maximum index at which majority of servers matched
+	commitIndex := serverMatchedIndex[(len(rf.matchIndex)+1)/2-1]
 	if commitIndex <= rf.snapshotIndex {
 		return
 	}
@@ -326,8 +327,9 @@ func (rf *Raft) leaderCommit() {
 	// The situation of Figure 8 can also be avoid if all of the replicas have been agreed at the same index.
 	// I add this sencond condition in this code so that it is unnecessary to add another request
 	// when the servers were shutdown and then restart to make sure the saved logs were commited and applied
-	if (rf.log.entry(commitIndex).Term == rf.currentTerm || commitIndex == matchIndex[len(matchIndex)-1]) && commitIndex > rf.commitIndex {
-		Debug(CommitEvent, rf.me, "leader commit, old commitIndex = %d, new commitIndex = %d\n", rf.commitIndex, commitIndex)
+	// || commitIndex == matchIndex[0]
+	if (rf.log.entry(commitIndex).Term == rf.currentTerm || commitIndex == serverMatchedIndex[0]) && commitIndex > rf.commitIndex {
+		Debug(CommitEvent, rf.me, "commit as leader, %d-%d\n", rf.commitIndex, commitIndex)
 		rf.commitIndex = commitIndex
 		rf.applyCond.Broadcast()
 	}

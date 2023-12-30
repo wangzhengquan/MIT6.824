@@ -147,10 +147,10 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	v := m.Command
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
-			log.Printf("S%v log: %v; \n S%v log: %v\n", i, cfg.logs[i], j, cfg.logs[j])
+			log.Printf("S%v log: %v; \nS%v log: %v\n", i, cfg.logs[i], j, cfg.logs[j])
 			cfg.printLogAt(m.CommandIndex)
 			// some server has already committed a different value for this entry!
-			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
+			err_msg = fmt.Sprintf("commit index=%v S%v %v != S%v %v",
 				m.CommandIndex, i, m.Command, j, old)
 			panic(err_msg)
 		}

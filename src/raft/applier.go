@@ -43,7 +43,7 @@ func (rf *Raft) applier() {
 		snapshotIndex := rf.snapshotIndex
 		if snapshotIndex > rf.lastApplied {
 			// applySnapshot
-			Debug(SnapEvent, rf.me, "applySnapshot %d before\n", snapshotIndex)
+			Debug(SnapEvent, rf.me, "apply snapshot %d before\n", snapshotIndex)
 			msg := ApplyMsg{
 				CommandValid:  false,
 				SnapshotValid: true,
@@ -55,7 +55,7 @@ func (rf *Raft) applier() {
 
 			rf.applyCh <- msg
 			rf.mu.Lock()
-			Debug(SnapEvent, rf.me, "applySnapshot after. snapshotIndex=%d, lastApplied old=%d\n", snapshotIndex, rf.lastApplied)
+			Debug(SnapEvent, rf.me, "apply snapshot after. snapshotIndex=%d, lastApplied old=%d\n", snapshotIndex, rf.lastApplied)
 			if snapshotIndex > rf.lastApplied {
 				rf.lastApplied = snapshotIndex
 				if snapshotIndex > rf.commitIndex {
@@ -67,7 +67,8 @@ func (rf *Raft) applier() {
 		} else if rf.lastApplied < rf.commitIndex {
 			// apply commit
 
-			Debug(CommitEvent, rf.me, "IsLeader=%v Apply %d-%d\n", rf.role == LEADER, rf.lastApplied, rf.commitIndex)
+			Debug(CommitEvent, rf.me, "apply %d-%d,  IsLeader=%v\n",
+				rf.lastApplied, rf.commitIndex, rf.role == LEADER)
 			commandIndex := rf.lastApplied + 1
 			msg := ApplyMsg{
 				CommandValid: true,

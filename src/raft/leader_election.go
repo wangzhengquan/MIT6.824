@@ -33,12 +33,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 	if args.Term < rf.currentTerm {
-		Debug(VoteEvent, rf.me, "Voter denies vote to %d for candidate term %d < current term %d.\n",
+		Debug(VoteEvent, rf.me, "reject vote to S%d for candidate's term %d < current term %d.\n",
 			args.CandidateId, args.Term, rf.currentTerm)
 		return
 	}
 
-	Debug(VoteEvent, rf.me, "received vote request, args=%+v.\n", args)
+	Debug(VoteEvent, rf.me, "received vote request from S%d, args=%+v.\n", args.CandidateId, args)
 
 	if args.Term > rf.currentTerm {
 		rf.stepDown(args.Term)
@@ -52,18 +52,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		upToDate := args.LastLogTerm > rf.log.lastEntry().Term ||
 			(args.LastLogTerm == rf.log.lastEntry().Term && args.LastLogIndex >= rf.log.lastIndex())
 		if upToDate {
-			Debug(VoteEvent, rf.me, "Grant vote to %d.\n", args.CandidateId)
+			Debug(VoteEvent, rf.me, "grant vote to S%d\n", args.CandidateId)
 			rf.votedFor = args.CandidateId
 			rf.resetElectionTimer()
 			rf.persistSate()
 			reply.VoteGranted = true
 		} else {
-			Debug(VoteEvent, rf.me, "Voter denies its vote for its own log is more up-to-date than that of the candidate S%d.\n",
+			Debug(VoteEvent, rf.me, "reject vote for it's log is more up-to-date than that of candidate S%d.\n",
 				args.CandidateId)
 		}
 
 	} else {
-		Debug(VoteEvent, rf.me, "Reject vote to %d for voter had voted for %d\n",
+		Debug(VoteEvent, rf.me, "reject vote to S%d for it had voted for S%d\n",
 			args.CandidateId, rf.votedFor)
 	}
 }
@@ -129,11 +129,10 @@ func (rf *Raft) leaderElection() {
 			LastLogTerm:  rf.log.lastEntry().Term,
 		}
 		for peerId := 0; peerId < len(rf.peers); peerId++ {
-			if peerId == rf.me {
-				continue
+			if peerId != rf.me {
+				Debug(VoteEvent, rf.me, "send request vote to %d with term %d\n", peerId, rf.currentTerm)
+				go rf.sendRequestVote(peerId, &args, replyCh)
 			}
-			Debug(VoteEvent, rf.me, "Send request vote to %d with term: %d\n", peerId, rf.currentTerm)
-			go rf.sendRequestVote(peerId, &args, replyCh)
 		}
 		rf.mu.Unlock()
 
@@ -142,12 +141,13 @@ func (rf *Raft) leaderElection() {
 		votesCount := rf.countVotes(replyCh)
 
 		rf.mu.Lock()
-		// a trick bug in TestFigure8Unreliable2C since I didn't check rf.currentTerm before then
+		// here I once encounter a trick bug in TestFigure8Unreliable2C caused by missing check rf.currentTerm
 		// whiout this check it may be elected success with and old term, but now run as a leader with new term
 		if rf.currentTerm == args.Term && rf.role == CANDIDATE && votesCount >= majority {
+			Debug(VoteEvent, rf.me, "elected as a leader with term %d\n", rf.currentTerm)
 			rf.becomeLeader()
 		} else {
-			Debug(VoteEvent, rf.me, "Elected failed with term %d\n", args.Term)
+			Debug(VoteEvent, rf.me, "elected failed with term %d\n", args.Term)
 		}
 	}
 }
@@ -178,7 +178,6 @@ func (rf *Raft) countVotes(replyCh <-chan *RequestVoteReply) int {
 }
 
 func (rf *Raft) becomeLeader() {
-	Debug(VoteEvent, rf.me, "Elected success with term %d\n", rf.currentTerm)
 	rf.leaderId = rf.me
 	rf.role = LEADER
 	rf.nextIndex = make([]int, len(rf.peers))

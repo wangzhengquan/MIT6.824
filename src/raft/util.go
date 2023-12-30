@@ -78,3 +78,17 @@ func Assert(expect bool, format string, a ...interface{}) {
 		panic(fmt.Sprintf(format, a...))
 	}
 }
+
+func Min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func Max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}

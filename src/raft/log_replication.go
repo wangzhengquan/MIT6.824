@@ -82,20 +82,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 	} else if args.PrevLogIndex < rf.snapshotIndex {
 		i := rf.snapshotIndex - args.PrevLogIndex - 1
-
 		// log.Printf("---args.PrevLogIndex %d < rf.snapshotIndex %d, i=%d, len(args.Entries)=%d\n", args.PrevLogIndex, rf.snapshotIndex, i, len(args.Entries))
 		if len(args.Entries) > i {
 			Assert(args.Entries[i].Term == rf.snapshotTerm, "args.Entries[i].Term=%d ,rf.snapshotTerm=%d", args.Entries[i].Term, rf.snapshotTerm)
+			oldLogLen := rf.log.length()
 			rf.log.place(rf.snapshotIndex, args.Entries[i:]...)
+			Debug(HeartbeatEvent, rf.me, "approve AppendEntries request from S%d, old log=%d, new log=%d\n",
+				args.LeaderId, oldLogLen, rf.log.length())
+
 			rf.persistSate()
-			Debug(HeartbeatEvent, rf.me, "approve append entries, i=%d, len(args.Entries)=%d\n", i, len(args.Entries))
 			rf.followerCommit(args.LeaderCommitIndex)
 		}
-		// j := 1
-		// i := rf.snapshotIndex - args.PrevLogIndex
+		// j := 0
+		// i := rf.snapshotIndex - args.PrevLogIndex - 1
 		// if len(args.Entries) > i {
-		// 	// it should be "args.Entries[i-1] == rf.log[0]"
-		// 	Assert(args.Entries[i-1].Term == rf.snapshotTerm, "args.Entries[i-1].Term=%d ,rf.snapshotTerm=%d", args.Entries[i-1].Term, rf.snapshotTerm)
+		// 	// it should be "args.Entries[i] == rf.log[0]"
+		// 	Assert(args.Entries[i].Term == rf.snapshotTerm, "args.Entries[i].Term=%d ,rf.snapshotTerm=%d", args.Entries[i].Term, rf.snapshotTerm)
 		// 	for ; i < len(args.Entries) && j < len(rf.log.entries); i, j = i+1, j+1 {
 		// 		rf.log.entries[j] = args.Entries[i]
 		// 	}
@@ -124,21 +126,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// follower commit
 		rf.followerCommit(args.LeaderCommitIndex)
 		reply.Success = true
-	}
-}
-
-func (rf *Raft) followerCommit(leaderCommitIndex int) {
-	if leaderCommitIndex > rf.commitIndex {
-		var commitIndex int
-		if leaderCommitIndex < rf.log.lastIndex() {
-			commitIndex = leaderCommitIndex
-		} else {
-			commitIndex = rf.log.lastIndex()
-		}
-		Debug(CommitEvent, rf.me, "commit as follower, %d-%d\n",
-			rf.commitIndex, commitIndex)
-		rf.commitIndex = commitIndex
-		rf.applyCond.Broadcast()
 	}
 }
 
@@ -182,7 +169,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 }
 
-// =============leader================
+// ========================== leader ====================================
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	if ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply); ok {
@@ -241,17 +228,9 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 					newNextIndex += 1
 				}
 
-				if rf.matchIndex[server] < newNextIndex {
-					rf.nextIndex[server] = newNextIndex
-				} else {
-					rf.nextIndex[server] = rf.matchIndex[server] + 1
-				}
-
-				Debug(HeartbeatEvent, rf.me, "backward nextIndex %d<--%d.\n",
+				rf.nextIndex[server] = Max(rf.matchIndex[server]+1, newNextIndex)
+				Debug(HeartbeatEvent, rf.me, "roll back nextIndex %d<--%d.\n",
 					rf.nextIndex[server], oldNextIndex)
-				Assert(rf.matchIndex[server] < rf.nextIndex[server],
-					"sendAppendEntries reply, rf.matchIndex[%d]=%d, rf.nextIndex=%d\n",
-					server, rf.matchIndex[server], rf.nextIndex[server])
 			}
 		}
 	} else {
@@ -312,10 +291,6 @@ func (rf *Raft) getSortedMatchIndex() []int {
 }
 
 func (rf *Raft) leaderCommit() {
-	if rf.role != LEADER {
-		return
-	}
-
 	serverMatchedIndex := rf.getSortedMatchIndex()
 	//  "(len(rf.matchIndex)+1)/2-1" is the maximum index at which majority of servers matched
 	commitIndex := serverMatchedIndex[(len(rf.matchIndex)+1)/2-1]
@@ -330,6 +305,16 @@ func (rf *Raft) leaderCommit() {
 	// || commitIndex == matchIndex[0]
 	if (rf.log.entry(commitIndex).Term == rf.currentTerm || commitIndex == serverMatchedIndex[0]) && commitIndex > rf.commitIndex {
 		Debug(CommitEvent, rf.me, "commit as leader, %d-%d\n", rf.commitIndex, commitIndex)
+		rf.commitIndex = commitIndex
+		rf.applyCond.Broadcast()
+	}
+}
+
+func (rf *Raft) followerCommit(leaderCommitIndex int) {
+	if leaderCommitIndex > rf.commitIndex {
+		var commitIndex int = Min(leaderCommitIndex, rf.log.lastIndex())
+		Debug(CommitEvent, rf.me, "commit as follower, %d-%d\n",
+			rf.commitIndex, commitIndex)
 		rf.commitIndex = commitIndex
 		rf.applyCond.Broadcast()
 	}

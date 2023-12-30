@@ -169,7 +169,7 @@ func a() {
 	go run()
 }
 
-func TestChan(t *testing.T) {
+func Disalbe_TestChan(t *testing.T) {
 	// ch := make(chan bool)
 	fmt.Printf("TestChan begin\n")
 	defer fmt.Printf("TestChan end\n")

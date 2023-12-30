@@ -333,6 +333,7 @@ func (rf *Raft) leaderHeartbeats() {
 			if !ok {
 				return
 			}
+			t.Reset(HEARTBEAT_TIME_INTERVAL)
 		case <-t.C:
 			t.Reset(HEARTBEAT_TIME_INTERVAL)
 		}

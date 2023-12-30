@@ -1,3 +1,4 @@
+## lab2
 VERBOSE=1 go test -run TestFigure8Unreliable2C | tee output.log | dslogs -c5
 VERBOSE=1 dstest -p8 -n32 TestFigure8Unreliable2C
 VERBOSE=1 go test -run TestFigure8Unreliable2C | dslogs -c5

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-var HEARTBEAT_TIME_INTERVAL time.Duration = 100
+var HEARTBEAT_TIME_INTERVAL time.Duration = 100 * time.Millisecond
 
 type AppendEntriesArgs struct {
 	Term              int     // leader’s term
@@ -320,8 +320,22 @@ func (rf *Raft) followerCommit(leaderCommitIndex int) {
 	}
 }
 
+func (rf *Raft) notifyHeartbeat() {
+	rf.heartbeatNotifyCh <- true
+}
+
 func (rf *Raft) leaderHeartbeats() {
+	t := time.NewTimer(HEARTBEAT_TIME_INTERVAL)
+	defer t.Stop()
 	for rf.Killed() == false {
+		select {
+		case _, ok := <-rf.heartbeatNotifyCh:
+			if !ok {
+				return
+			}
+		case <-t.C:
+			t.Reset(HEARTBEAT_TIME_INTERVAL)
+		}
 		rf.mu.Lock()
 		if rf.role == LEADER {
 			rf.leaderLogReplication()
@@ -331,7 +345,7 @@ func (rf *Raft) leaderHeartbeats() {
 			break
 		}
 
-		time.Sleep(HEARTBEAT_TIME_INTERVAL * time.Millisecond)
+		// time.Sleep(HEARTBEAT_TIME_INTERVAL * time.Millisecond)
 	}
 
 }

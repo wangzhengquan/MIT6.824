@@ -75,7 +75,8 @@ type Raft struct {
 	leaderId      int
 	lastHeartbeat time.Time
 	// commitCh      chan int
-	applyCh chan ApplyMsg
+	applyCh           chan ApplyMsg
+	heartbeatNotifyCh chan bool
 }
 
 // return currentTerm and whether this server
@@ -201,7 +202,8 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 	rf.log.append(entry)
 	index = rf.log.lastIndex()
 	rf.persistSate()
-	rf.leaderLogReplication()
+	go rf.notifyHeartbeat()
+	// rf.leaderLogReplication()
 	return
 }
 
@@ -219,6 +221,7 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 	rf.applyCond.Broadcast()
+	// close(rf.heartbeatNotifyCh)
 }
 
 func (rf *Raft) Killed() bool {
@@ -249,6 +252,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.applyCh = applyCh
 	rf.applyCond = sync.NewCond(&rf.mu)
+	rf.heartbeatNotifyCh = make(chan bool)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

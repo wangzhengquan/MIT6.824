@@ -9,6 +9,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"math/rand"
 	"testing"
 	"time"
@@ -145,4 +146,40 @@ func disable_TestBackup2b(t *testing.T) {
 	cfg.one(rand.Int(), servers, true)
 
 	cfg.end()
+}
+
+func run() {
+	fmt.Printf("run begin\n")
+	defer fmt.Printf("run end\n")
+	for {
+		// v, ok := <-ch
+		// if !ok {
+		// 	return
+		// }
+		// fmt.Println(v)
+		time.Sleep(10 * time.Millisecond)
+		fmt.Println("hello")
+
+	}
+}
+
+func a() {
+	fmt.Printf("a begin\n")
+	defer fmt.Printf("a end\n")
+	go run()
+}
+
+func TestChan(t *testing.T) {
+	// ch := make(chan bool)
+	fmt.Printf("TestChan begin\n")
+	defer fmt.Printf("TestChan end\n")
+	// go func() {
+
+	// }()
+	a()
+	// ch <- true
+	// close(ch)
+	// ch <- true
+	time.Sleep(100 * time.Millisecond)
+
 }

@@ -202,7 +202,7 @@ func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) 
 	rf.log.append(entry)
 	index = rf.log.lastIndex()
 	rf.persistSate()
-	go rf.notifyHeartbeat()
+	rf.notifyHeartbeat()
 	// rf.leaderLogReplication()
 	return
 }
@@ -221,7 +221,7 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 	rf.applyCond.Broadcast()
-	// close(rf.heartbeatNotifyCh)
+	close(rf.heartbeatNotifyCh)
 }
 
 func (rf *Raft) Killed() bool {

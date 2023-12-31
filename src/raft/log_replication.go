@@ -321,7 +321,11 @@ func (rf *Raft) followerCommit(leaderCommitIndex int) {
 }
 
 func (rf *Raft) notifyHeartbeat() {
-	rf.heartbeatNotifyCh <- true
+	select {
+	case rf.heartbeatNotifyCh <- true:
+	default:
+	}
+
 }
 
 func (rf *Raft) leaderHeartbeats() {

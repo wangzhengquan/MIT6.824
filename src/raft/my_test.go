@@ -200,7 +200,9 @@ func run2(ch chan int) {
 func triggerCh(ch chan int, v int) {
 	select {
 	case ch <- v:
+		log.Printf("trigger suc %d", v)
 	default:
+		log.Printf("trigger fail %d", v)
 	}
 }
 
@@ -209,20 +211,28 @@ func closeCh(ch chan int) {
 	ch = nil
 }
 
-func TestChan(t *testing.T) {
+func D_TestChan(t *testing.T) {
 	ch := make(chan int, 1)
-	fmt.Printf("TestChan begin\n")
+
+	fmt.Printf("TestChan begin length ch=%d\n", len(ch))
 	defer fmt.Printf("TestChan end\n")
 
 	go run(ch)
-	for i := 0; i < 100; i++ {
-		triggerCh(ch, i)
+	// time.Sleep(1 * time.Millisecond)
+	// triggerCh(ch, 1)
+	// time.Sleep(1 * time.Millisecond)
+	// triggerCh(ch, 2)
+	// time.Sleep(1 * time.Millisecond)
+	// triggerCh(ch, 3)
+	for i := 0; i < 5; i++ {
 		time.Sleep(1 * time.Millisecond)
+		triggerCh(ch, i)
+
 		// ch <- i
 
 	}
 
 	// t.Fatalf("TestChan")
-	// time.Sleep(100 * time.Millisecond)
+	// time.Sleep(20 * time.Millisecond)
 
 }

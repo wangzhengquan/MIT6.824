@@ -186,8 +186,9 @@ func (rf *Raft) becomeLeader() {
 	}
 	rf.matchIndex = make([]int, len(rf.peers))
 
-	go rf.leaderHeartbeats()
 	rf.notifyHeartbeat()
+	go rf.leaderHeartbeats()
+
 }
 
 func (rf *Raft) ticker() {

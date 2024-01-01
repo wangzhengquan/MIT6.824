@@ -346,7 +346,7 @@ func (rf *Raft) leaderHeartbeats() {
 			break
 		}
 
-		// time.Sleep(HEARTBEAT_TIME_INTERVAL * time.Millisecond)
+		// time.Sleep(HEARTBEAT_TIME_INTERVAL)
 	}
 
 }

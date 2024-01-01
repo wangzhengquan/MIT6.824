@@ -169,17 +169,26 @@ func a() {
 	go run()
 }
 
-func Disalbe_TestChan(t *testing.T) {
-	// ch := make(chan bool)
+func TestChan(t *testing.T) {
+	ch := make(chan bool)
 	fmt.Printf("TestChan begin\n")
 	defer fmt.Printf("TestChan end\n")
-	// go func() {
-
-	// }()
-	a()
-	// ch <- true
-	// close(ch)
-	// ch <- true
-	time.Sleep(100 * time.Millisecond)
+	go func() {
+		_, ok := <-ch
+		if !ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+		fmt.Println("hello")
+	}()
+	ch <- true
+	close(ch)
+	ch = nil
+	select {
+	case ch <- true:
+	default:
+	}
+	// t.Fatalf("TestChan")
+	// time.Sleep(100 * time.Millisecond)
 
 }

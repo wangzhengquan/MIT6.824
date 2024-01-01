@@ -221,7 +221,11 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 	rf.applyCond.Broadcast()
-	close(rf.heartbeatNotifyCh)
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
+	// close(rf.heartbeatNotifyCh)
+	// IMPORTANT: not just close channel, but also need to reset channel to avoid send to closed channel
+	// rf.heartbeatNotifyCh = nil
 }
 
 func (rf *Raft) Killed() bool {

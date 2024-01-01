@@ -615,8 +615,8 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 			if retry == false {
 				errmsg := fmt.Sprintf("one(%v) failed to reach agreement", cmd)
-				cfg.t.Fatalf(errmsg)
 				panic(errmsg)
+				// cfg.t.Fatalf(errmsg)
 			}
 		} else {
 			time.Sleep(50 * time.Millisecond)
@@ -624,8 +624,8 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 	}
 	if cfg.checkFinished() == false {
 		errmsg := fmt.Sprintf("one(%v) failed to reach agreement", cmd)
-		cfg.t.Fatalf(errmsg)
 		panic(errmsg)
+		// cfg.t.Fatalf(errmsg)
 	}
 	return -1
 }

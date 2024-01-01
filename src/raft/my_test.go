@@ -10,6 +10,7 @@ package raft
 
 import (
 	"fmt"
+	"log"
 	"math/rand"
 	"testing"
 	"time"
@@ -148,46 +149,79 @@ func disable_TestBackup2b(t *testing.T) {
 	cfg.end()
 }
 
-func run() {
-	fmt.Printf("run begin\n")
-	defer fmt.Printf("run end\n")
+func run(ch chan int) {
+	log.Printf("run begin\n")
+	defer log.Printf("run end\n")
+	i := 0
 	for {
-		// v, ok := <-ch
-		// if !ok {
-		// 	return
-		// }
-		// fmt.Println(v)
-		time.Sleep(10 * time.Millisecond)
-		fmt.Println("hello")
-
+		var v int = -1
+		var ok bool
+		select {
+		case v, ok = <-ch:
+			if !ok {
+				break
+			}
+		case <-time.After(2 * time.Millisecond):
+			log.Printf("time after=%v", time.Now())
+		}
+		log.Printf("%d value=%v", i, v)
+		i++
+		time.Sleep(3 * time.Millisecond)
 	}
 }
 
-func a() {
-	fmt.Printf("a begin\n")
-	defer fmt.Printf("a end\n")
-	go run()
+func run2(ch chan int) {
+	log.Printf("run begin\n")
+	defer log.Printf("run end\n")
+	var timeout time.Duration = 2 * time.Millisecond
+	t := time.NewTimer(timeout)
+	i := 0
+	for {
+		var v int = -1
+		var ok bool
+		defer t.Stop()
+		select {
+		case v, ok = <-ch:
+			if !ok {
+				return
+			}
+			// t.Reset(timeout)
+		case <-t.C:
+			// t.Reset(timeout)
+			log.Printf("timeout=%v", time.Now())
+		}
+		log.Printf("%d value=%v", i, v)
+		i++
+		time.Sleep(3 * time.Millisecond)
+		t.Reset(timeout)
+	}
+}
+
+func triggerCh(ch chan int, v int) {
+	select {
+	case ch <- v:
+	default:
+	}
+}
+
+func closeCh(ch chan int) {
+	close(ch)
+	ch = nil
 }
 
 func TestChan(t *testing.T) {
-	ch := make(chan bool)
+	ch := make(chan int, 1)
 	fmt.Printf("TestChan begin\n")
 	defer fmt.Printf("TestChan end\n")
-	go func() {
-		_, ok := <-ch
-		if !ok {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-		fmt.Println("hello")
-	}()
-	ch <- true
-	close(ch)
-	ch = nil
-	select {
-	case ch <- true:
-	default:
+
+	go run(ch)
+	for i := 0; i < 100; i++ {
+		triggerCh(ch, i)
+		time.Sleep(1 * time.Millisecond)
+		// ch <- i
+
 	}
+
 	// t.Fatalf("TestChan")
 	// time.Sleep(100 * time.Millisecond)
 

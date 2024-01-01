@@ -329,17 +329,13 @@ func (rf *Raft) notifyHeartbeat() {
 }
 
 func (rf *Raft) leaderHeartbeats() {
-	t := time.NewTimer(HEARTBEAT_TIME_INTERVAL)
-	defer t.Stop()
 	for rf.Killed() == false {
 		select {
 		case _, ok := <-rf.heartbeatNotifyCh:
 			if !ok {
 				return
 			}
-			t.Reset(HEARTBEAT_TIME_INTERVAL)
-		case <-t.C:
-			t.Reset(HEARTBEAT_TIME_INTERVAL)
+		case <-time.After(HEARTBEAT_TIME_INTERVAL):
 		}
 		rf.mu.Lock()
 		if rf.role == LEADER {

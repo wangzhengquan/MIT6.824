@@ -256,7 +256,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.applyCh = applyCh
 	rf.applyCond = sync.NewCond(&rf.mu)
-	rf.heartbeatNotifyCh = make(chan bool)
+	rf.heartbeatNotifyCh = make(chan bool, 1)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

@@ -197,6 +197,32 @@ func run2(ch chan int) {
 	}
 }
 
+func run3(ch chan int) {
+	log.Printf("run begin\n")
+	defer log.Printf("run end\n")
+	var timeout time.Duration = 2 * time.Millisecond
+	t := time.NewTimer(timeout)
+	i := 0
+	var v int = -1
+	var ok bool
+	defer t.Stop()
+	select {
+	case v, ok = <-ch:
+		if !ok {
+			return
+		}
+		// t.Reset(timeout)
+	case <-t.C:
+		// t.Reset(timeout)
+		log.Printf("timeout=%v", time.Now())
+	}
+	log.Printf("%d value=%v", i, v)
+	i++
+	time.Sleep(4 * time.Millisecond)
+	t.Reset(timeout)
+
+}
+
 func triggerCh(ch chan int, v int) {
 	select {
 	case ch <- v:
@@ -218,12 +244,7 @@ func D_TestChan(t *testing.T) {
 	defer fmt.Printf("TestChan end\n")
 
 	go run(ch)
-	// time.Sleep(1 * time.Millisecond)
-	// triggerCh(ch, 1)
-	// time.Sleep(1 * time.Millisecond)
-	// triggerCh(ch, 2)
-	// time.Sleep(1 * time.Millisecond)
-	// triggerCh(ch, 3)
+
 	for i := 0; i < 5; i++ {
 		time.Sleep(1 * time.Millisecond)
 		triggerCh(ch, i)
@@ -234,5 +255,18 @@ func D_TestChan(t *testing.T) {
 
 	// t.Fatalf("TestChan")
 	// time.Sleep(20 * time.Millisecond)
+
+}
+
+func D_TestChan3(t *testing.T) {
+	ch := make(chan int, 1)
+
+	fmt.Printf("TestChan begin length ch=%d\n", len(ch))
+	defer fmt.Printf("TestChan end\n")
+	ch <- 3
+	go run3(ch)
+
+	// t.Fatalf("TestChan")
+	time.Sleep(1 * time.Second)
 
 }
